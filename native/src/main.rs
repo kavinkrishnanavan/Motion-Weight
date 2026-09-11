@@ -76,7 +76,17 @@ const MIN_SIZE: (u32, u32) = (1100, 700);
 /// refreshes, and without a cap every one of those repaints the whole window
 /// in software, which is what "dragging feels laggy" actually was: a CPU-bound
 /// flood of redundant full frames, not a rendering-cost problem.
-const MIN_FRAME: std::time::Duration = std::time::Duration::from_millis(8);
+///
+/// 8ms (~125Hz) used to be worth it for very high-refresh monitors, but it
+/// outpaces the far more common 60Hz display — every one of those extra
+/// presents on a windowed (non-maximized) surface still costs DWM a full
+/// recomposite of the desktop behind it, work a maximized, screen-covering
+/// window can often skip via a cheaper flip path. That's what made the UI
+/// feel laggier windowed than maximized even though nothing on screen
+/// actually changed faster than the display could show it. 16ms (~60Hz)
+/// still reads as perfectly smooth for a desktop UI and roughly halves that
+/// wasted composition work.
+const MIN_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 
 /// A pane that has been pulled out of the main window. It carries its own
 /// surface and its own input state; the application state behind it is shared,
