@@ -1,0 +1,4 @@
+[target.x86_64-pc-windows-msvc]
+# Statically link the MSVC runtime so the executable is genuinely standalone:
+# no Visual C++ redistributable needed on the machine that runs it.
+rustflags = ["-C", "target-feature=+crt-static"]

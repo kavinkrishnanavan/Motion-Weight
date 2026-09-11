@@ -1,0 +1,9 @@
+target/
+MotionWeight.exe
+
+# Local screen captures, not project source.
+*.mp4
+
+# Debug/scratch dumps left behind by ad-hoc decoder/harness testing.
+native/hevc_1080b.raw
+native/verify_restore
