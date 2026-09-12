@@ -240,19 +240,33 @@ impl ClipDecoder {
         // just keeps decoding forward and the preview lags rather than
         // dying — worse sync, but never stuck.
         let fresh = self.current.is_some() && self.current_gen == self.stream_gen;
-        let need_seek = if fresh {
+        // A timed-out seek retries at its *own* original target, not at `t`.
+        // While playing, `t` is the live, ever-advancing playhead; if the
+        // seek simply hasn't produced a frame yet because that position is
+        // slow to reach (a deep GOP, a cold read), retrying against `t`
+        // instead chases a moving target that has only gotten harder to
+        // reach in the meantime — the exact divergent spiral described
+        // below ("the gap only grows"), just entered here (on resuming
+        // playback after the decoder parked, which always re-seeks) rather
+        // than through the "falling behind" path that was removed for that
+        // reason. Retrying the same, fixed target converges instead, or at
+        // worst keeps failing no worse than before.
+        let seek_target = if fresh {
             let (cur, _) = self.current.as_ref().unwrap();
-            t < *cur - 0.05
+            (t < *cur - 0.05).then_some(t)
+        } else if t < self.stream_start - 0.05 {
+            // Nothing has landed yet for this seek, and a jump backward past
+            // its own target is still a real, unambiguous re-seek signal.
+            Some(t)
+        } else if self.seek_issued_at.elapsed().as_secs_f32() > SEEK_TIMEOUT_S {
+            Some(self.stream_start)
         } else {
-            // Nothing has landed yet for this seek. A jump backward past its
-            // own target is still a real, unambiguous re-seek signal; simply
-            // taking a long time to arrive is not — that is judged by
-            // wall-clock elapsed time instead, so a slow-but-working decode
-            // is not cancelled out from under itself (see `SEEK_TIMEOUT_S`).
-            t < self.stream_start - 0.05 || self.seek_issued_at.elapsed().as_secs_f32() > SEEK_TIMEOUT_S
+            None
         };
-        if need_seek && !self.parked {
-            self.seek(t);
+        if let Some(target) = seek_target {
+            if !self.parked {
+                self.seek(target);
+            }
         }
 
         // Nothing is asking for new frames and we already have the one being
