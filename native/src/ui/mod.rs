@@ -127,7 +127,6 @@ pub enum DragPayload {
     Text,
     StockPhoto(usize),
     StockVideo(usize),
-    StockAudio(usize),
 }
 
 impl Ctx {

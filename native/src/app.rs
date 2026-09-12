@@ -7,7 +7,6 @@ use crate::media::{self, Imported};
 use crate::model::*;
 use crate::preview::Preview;
 use crate::projects;
-use crate::freesound::StockAudio;
 use crate::stock::{StockPhoto, StockVideo};
 use crate::store::Store;
 use crate::ui::widgets::{self, ButtonStyle, Icon};
@@ -44,6 +43,15 @@ pub enum LibraryTab {
     Media,
     Text,
     Stock,
+}
+
+/// The Stock tab's own sub-tabs, mirroring the Basic/Mask/Color/Transitions
+/// split in the clip inspector rather than stacking every kind in one
+/// endless scroll.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StockTab {
+    Photo,
+    Video,
 }
 
 /// The four workspace panes. Any of them can be pulled out of the main window
@@ -103,7 +111,7 @@ impl SideTab {
 pub fn tabs_for(kind: ClipKind) -> Vec<SideTab> {
     match kind {
         ClipKind::Audio => vec![SideTab::Basic, SideTab::Audio],
-        ClipKind::Text => vec![SideTab::Basic],
+        ClipKind::Text => vec![SideTab::Basic, SideTab::Transitions],
         _ => vec![SideTab::Basic, SideTab::Mask, SideTab::Color, SideTab::Transitions],
     }
 }
@@ -186,7 +194,6 @@ pub enum Job {
     /// replaces them (a fresh search).
     StockPhotoResults(Result<Vec<StockPhoto>, String>, bool),
     StockVideoResults(Result<Vec<StockVideo>, String>, bool),
-    StockAudioResults(Result<Vec<StockAudio>, String>, bool),
     /// A thumbnail rebuilt for an asset that was already in the project file.
     Thumbnail(Id, Frame),
     StockThumbnail(u64, Frame),
@@ -214,23 +221,20 @@ pub struct App {
 
     pub library_tab: LibraryTab,
     pub library_scroll: f32,
+    pub stock_tab: StockTab,
     pub stock_scroll: f32,
     pub stock_query: String,
     pub stock_photos: Vec<StockPhoto>,
     pub stock_videos: Vec<StockVideo>,
-    pub stock_audio: Vec<StockAudio>,
     pub stock_photo_page: u32,
     pub stock_video_page: u32,
-    pub stock_audio_page: u32,
     pub stock_photo_loading: bool,
     pub stock_video_loading: bool,
-    pub stock_audio_loading: bool,
     /// Whether the most recent page for each kind came back full — a proxy
-    /// for "there might be more", since Pexels/Freesound don't return a total
-    /// count worth trusting across both APIs' differing shapes.
+    /// for "there might be more", since Pexels doesn't return a total count
+    /// worth trusting across both media kinds' differing response shapes.
     pub stock_photo_more: bool,
     pub stock_video_more: bool,
-    pub stock_audio_more: bool,
 
     pub side_tab: SideTab,
     pub side_scroll: f32,
@@ -298,20 +302,17 @@ impl App {
             project_thumb_pending: std::collections::HashSet::new(),
             library_tab: LibraryTab::Media,
             library_scroll: 0.0,
+            stock_tab: StockTab::Photo,
             stock_scroll: 0.0,
             stock_query: "nature".into(),
             stock_photos: Vec::new(),
             stock_videos: Vec::new(),
-            stock_audio: Vec::new(),
             stock_photo_page: 0,
             stock_video_page: 0,
-            stock_audio_page: 0,
             stock_photo_loading: false,
             stock_video_loading: false,
-            stock_audio_loading: false,
             stock_photo_more: false,
             stock_video_more: false,
-            stock_audio_more: false,
             side_tab: SideTab::Basic,
             trans_slot: TransSlot::In,
             gallery_clock: std::time::Instant::now(),
@@ -644,26 +645,6 @@ impl App {
                         }
                     }
                 }
-                Job::StockAudioResults(result, append) => {
-                    self.pending_jobs = self.pending_jobs.saturating_sub(1);
-                    self.stock_audio_loading = false;
-                    match result {
-                        Ok(list) => {
-                            self.stock_audio_more = list.len() >= 24;
-                            if append {
-                                self.stock_audio.extend(list);
-                            } else {
-                                self.stock_audio = list;
-                            }
-                        }
-                        Err(e) => {
-                            if !append {
-                                self.stock_audio.clear();
-                            }
-                            self.toast(format!("Audio search failed: {e}"), true);
-                        }
-                    }
-                }
                 Job::Thumbnail(id, frame) => {
                     self.pending_jobs = self.pending_jobs.saturating_sub(1);
                     self.thumbs.insert(id, frame);
@@ -774,10 +755,21 @@ impl App {
     pub fn run_stock_search(&mut self) {
         self.stock_photo_page = 1;
         self.stock_video_page = 1;
-        self.stock_audio_page = 1;
         self.search_stock_photos(false);
         self.search_stock_videos(false);
-        self.search_stock_audio(false);
+    }
+
+    /// Runs just the photo search — the Photo and Video stock tabs are now
+    /// split like the inspector's own tabs, each with its own search action,
+    /// rather than one shared search firing both at once.
+    pub fn run_stock_photo_search(&mut self) {
+        self.stock_photo_page = 1;
+        self.search_stock_photos(false);
+    }
+
+    pub fn run_stock_video_search(&mut self) {
+        self.stock_video_page = 1;
+        self.search_stock_videos(false);
     }
 
     pub fn load_more_stock_photos(&mut self) {
@@ -788,11 +780,6 @@ impl App {
     pub fn load_more_stock_videos(&mut self) {
         self.stock_video_page += 1;
         self.search_stock_videos(true);
-    }
-
-    pub fn load_more_stock_audio(&mut self) {
-        self.stock_audio_page += 1;
-        self.search_stock_audio(true);
     }
 
     fn search_stock_photos(&mut self, append: bool) {
@@ -816,18 +803,6 @@ impl App {
         self.stock_video_loading = true;
         self.spawn(move |tx| {
             let _ = tx.send(Job::StockVideoResults(crate::stock::search_videos(&key, &query, page), append));
-        });
-    }
-
-    fn search_stock_audio(&mut self, append: bool) {
-        let key = crate::freesound::api_key();
-        if key.is_empty() {
-            return;
-        }
-        let (query, page) = (self.stock_query.clone(), self.stock_audio_page.max(1));
-        self.stock_audio_loading = true;
-        self.spawn(move |tx| {
-            let _ = tx.send(Job::StockAudioResults(crate::freesound::search(&key, &query, page), append));
         });
     }
 
@@ -886,14 +861,6 @@ impl App {
         let (url, id) = (video.url.clone(), video.id);
         self.spawn(move |tx| {
             let result = crate::stock::download_video(&url, id).and_then(|path| media::build_asset(&path));
-            let _ = tx.send(Job::StockAsset(result, drop_at));
-        });
-    }
-
-    pub fn import_stock_audio(&mut self, audio: &StockAudio, drop_at: Option<(Id, f32)>) {
-        let (url, id) = (audio.preview_url.clone(), audio.id);
-        self.spawn(move |tx| {
-            let result = crate::freesound::download(&url, id).and_then(|path| media::build_asset(&path));
             let _ = tx.send(Job::StockAsset(result, drop_at));
         });
     }

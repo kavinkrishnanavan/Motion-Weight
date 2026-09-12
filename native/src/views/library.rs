@@ -1,7 +1,7 @@
 //! The media library: imported assets, the text preset, and stock search.
 //! Items here are drag sources for the timeline.
 
-use crate::app::{App, LibraryTab};
+use crate::app::{App, LibraryTab, StockTab};
 use crate::media::format_duration;
 use crate::model::{AssetKind, Id};
 use crate::ui::widgets::{self, ButtonStyle, Icon};
@@ -166,44 +166,165 @@ fn draw_text_tab(app: &mut App, ctx: &mut Ctx, r: Rect) {
 }
 
 fn draw_stock(app: &mut App, ctx: &mut Ctx, r: Rect) {
-    let (head, body) = r.split_top(52.0);
-    ctx.painter.label(
-        Rect::new(head.x, head.y + 4.0, head.w, 18.0),
-        "Stock",
-        FS_SMALL,
-        Weight::Bold,
-        TEXT_3,
-        Align::Left,
-    );
+    // Split like the inspector's own Basic/Mask/Color/Transitions tabs,
+    // rather than three stacked sections in one endless scroll.
+    let (head, body) = r.split_top(FIELD_H);
+    let tabs = [(StockTab::Photo, "Photo"), (StockTab::Video, "Video")];
+    let tab_w = (head.w - 6.0) / tabs.len() as f32;
+    for (i, (tab, label)) in tabs.iter().enumerate() {
+        let tr = Rect::new(head.x + i as f32 * (tab_w + 6.0), head.y, tab_w, head.h);
+        if widgets::tab(ctx, id_of("stock-tab", i as u64), tr, label, app.stock_tab == *tab) {
+            app.stock_tab = *tab;
+        }
+    }
+    let (_, body) = body.split_top(10.0);
+    match app.stock_tab {
+        StockTab::Photo => draw_stock_photo_tab(app, ctx, body),
+        StockTab::Video => draw_stock_video_tab(app, ctx, body),
+    }
+}
 
-    let search = Rect::new(head.x, head.y + 22.0, head.w, FIELD_H);
+/// A search field plus an explicit Search button, shared by the photo and
+/// video tabs. Enter used to silently do nothing: `text_field` clears its
+/// own focus the instant it returns the committed value (so the field stops
+/// showing a caret after Enter), but the caller here was checking `ctx.focus
+/// == the field's id` *after* that reset already happened — always false,
+/// so the query updated but the actual search never re-ran. Checking
+/// `ctx.keys` directly (still populated this frame regardless of focus)
+/// fixes Enter; the button covers the case where that isn't obvious anyway.
+fn draw_stock_search(app: &mut App, ctx: &mut Ctx, r: Rect, placeholder: &str, on_search: fn(&mut App)) {
+    let (btn, field) = r.split_right(70.0);
+    let field = Rect::new(field.x, field.y, (field.w - 8.0).max(0.0), field.h);
     let query = app.stock_query.clone();
-    if let Some(v) = widgets::text_field(ctx, id_of("stock-q", 0), search, &query, "Search photos, video, audio") {
+    let mut search = false;
+    if let Some(v) = widgets::text_field(ctx, id_of("stock-q", 0), field, &query, placeholder) {
         app.stock_query = v;
+        if ctx.keys.contains(&Key::Enter) {
+            search = true;
+        }
     }
-    if ctx.focus == id_of("stock-q", 0) && ctx.keys.contains(&Key::Enter) {
-        app.run_stock_search();
+    if widgets::button(ctx, id_of("stock-search", 0), btn, "Search", ButtonStyle::Normal) {
+        search = true;
     }
+    if search {
+        on_search(app);
+    }
+}
 
-    let (_, body) = body.split_top(8.0);
+fn draw_stock_photo_tab(app: &mut App, ctx: &mut Ctx, r: Rect) {
+    let (search, body) = r.split_top(FIELD_H);
+    draw_stock_search(app, ctx, search, "Search photos", App::run_stock_photo_search);
+    let (_, body) = body.split_top(10.0);
+
     let per_row = ((body.w + GAP) / (TILE_W + GAP)).floor().max(1.0) as usize;
+    let count = app.stock_photos.len();
+    if let Some(msg) = section_status(app.stock_photo_loading, count, crate::stock::api_key().is_empty()) {
+        widgets::hint(ctx, Rect::new(body.x, body.y, body.w, 20.0), msg);
+        return;
+    }
 
-    let section_h = |n: usize, more: bool| -> f32 {
-        let rows = if n == 0 { 0.0 } else { (n as f32 / per_row as f32).ceil() };
-        let status_h = if n == 0 { 20.0 } else { 0.0 };
-        let more_h = if more { 34.0 } else { 0.0 };
-        24.0 + rows * (TILE_H + GAP) + status_h + more_h + 14.0
-    };
-    let content_h = section_h(app.stock_photos.len(), app.stock_photo_more)
-        + section_h(app.stock_videos.len(), app.stock_video_more)
-        + section_h(app.stock_audio.len(), app.stock_audio_more);
-
+    let rows = (count as f32 / per_row as f32).ceil();
+    let more_h = if app.stock_photo_more { 34.0 } else { 0.0 };
+    let content_h = rows * (TILE_H + GAP) + more_h;
     widgets::scroll(ctx, id_of("stock-scroll", 0), body, content_h, &mut app.stock_scroll);
     let prev = ctx.painter.push_clip(body);
-    let mut y = body.y - app.stock_scroll;
-    y = draw_stock_photo_section(app, ctx, body, y, per_row);
-    y = draw_stock_video_section(app, ctx, body, y, per_row);
-    draw_stock_audio_section(app, ctx, body, y, per_row);
+    let y = body.y - app.stock_scroll;
+
+    let grid = Rect::new(body.x, y, body.w, rows * (TILE_H + GAP));
+    let mut import: Option<usize> = None;
+    for i in 0..count {
+        let col = i % per_row;
+        let row = i / per_row;
+        let tile = Rect::new(grid.x + col as f32 * (TILE_W + GAP), grid.y + row as f32 * (TILE_H + GAP), TILE_W, TILE_H);
+        if tile.bottom() < body.y || tile.y > body.bottom() {
+            continue;
+        }
+        let id = id_of("stock-photo", i as u64);
+        let (hovered, _) = ctx.interact(id, tile);
+        if hovered {
+            ctx.cursor = Cursor::Hand;
+        }
+        let photo_id = app.stock_photos[i].id;
+        let preview = app.stock_thumbs.get(&photo_id).filter(|f| f.width > 1);
+        widgets::thumb(ctx, tile, preview.map(|f| (&f.rgba[..], f.width, f.height)));
+        if ctx.is_active(id) && dragging_far(ctx) {
+            ctx.drag_payload = Some(DragPayload::StockPhoto(i));
+        }
+        if hovered && ctx.double_click {
+            import = Some(i);
+        }
+    }
+    if let Some(i) = import {
+        let photo = app.stock_photos[i].clone();
+        app.import_stock_photo(&photo, None);
+    }
+    if app.stock_photo_more {
+        let btn = Rect::new(body.x, grid.bottom() + GAP, 100.0, 26.0);
+        if widgets::button(ctx, id_of("stock-photo-more", 0), btn, "Load more", ButtonStyle::Normal) {
+            app.load_more_stock_photos();
+        }
+    }
+    ctx.painter.set_clip(prev);
+}
+
+fn draw_stock_video_tab(app: &mut App, ctx: &mut Ctx, r: Rect) {
+    let (search, body) = r.split_top(FIELD_H);
+    draw_stock_search(app, ctx, search, "Search video", App::run_stock_video_search);
+    let (_, body) = body.split_top(10.0);
+
+    let per_row = ((body.w + GAP) / (TILE_W + GAP)).floor().max(1.0) as usize;
+    let count = app.stock_videos.len();
+    if let Some(msg) = section_status(app.stock_video_loading, count, crate::stock::api_key().is_empty()) {
+        widgets::hint(ctx, Rect::new(body.x, body.y, body.w, 20.0), msg);
+        return;
+    }
+
+    let rows = (count as f32 / per_row as f32).ceil();
+    let more_h = if app.stock_video_more { 34.0 } else { 0.0 };
+    let content_h = rows * (TILE_H + GAP) + more_h;
+    widgets::scroll(ctx, id_of("stock-scroll", 0), body, content_h, &mut app.stock_scroll);
+    let prev = ctx.painter.push_clip(body);
+    let y = body.y - app.stock_scroll;
+
+    let grid = Rect::new(body.x, y, body.w, rows * (TILE_H + GAP));
+    let mut import: Option<usize> = None;
+    for i in 0..count {
+        let col = i % per_row;
+        let row = i / per_row;
+        let tile = Rect::new(grid.x + col as f32 * (TILE_W + GAP), grid.y + row as f32 * (TILE_H + GAP), TILE_W, TILE_H);
+        if tile.bottom() < body.y || tile.y > body.bottom() {
+            continue;
+        }
+        let id = id_of("stock-video", i as u64);
+        let (hovered, _) = ctx.interact(id, tile);
+        if hovered {
+            ctx.cursor = Cursor::Hand;
+        }
+        let video_id = app.stock_videos[i].id;
+        let preview = app.stock_video_thumbs.get(&video_id).filter(|f| f.width > 1);
+        widgets::thumb(ctx, tile, preview.map(|f| (&f.rgba[..], f.width, f.height)));
+        let badge_text = format_duration(app.stock_videos[i].duration);
+        let bw = ctx.painter.text_width(&badge_text, FS_SMALL, Weight::Regular) + 10.0;
+        let badge = Rect::new(tile.right() - bw - 4.0, tile.bottom() - 18.0, bw, 14.0);
+        ctx.painter.round_rect(badge, 3.0, rgba(0x000000, 190));
+        ctx.painter.label(badge, &badge_text, FS_SMALL, Weight::Regular, TEXT_2, Align::Center);
+        if ctx.is_active(id) && dragging_far(ctx) {
+            ctx.drag_payload = Some(DragPayload::StockVideo(i));
+        }
+        if hovered && ctx.double_click {
+            import = Some(i);
+        }
+    }
+    if let Some(i) = import {
+        let video = app.stock_videos[i].clone();
+        app.import_stock_video(&video, None);
+    }
+    if app.stock_video_more {
+        let btn = Rect::new(body.x, grid.bottom() + GAP, 100.0, 26.0);
+        if widgets::button(ctx, id_of("stock-video-more", 0), btn, "Load more", ButtonStyle::Normal) {
+            app.load_more_stock_videos();
+        }
+    }
     ctx.painter.set_clip(prev);
 }
 
@@ -224,200 +345,6 @@ fn section_status(loading: bool, n: usize, key_missing: bool) -> Option<&'static
     }
 }
 
-fn draw_stock_photo_section(app: &mut App, ctx: &mut Ctx, body: Rect, y: f32, per_row: usize) -> f32 {
-    ctx.painter.label(
-        Rect::new(body.x, y, body.w, 20.0),
-        &format!("Photos  {}", app.stock_photos.len()),
-        FS_SMALL,
-        Weight::Bold,
-        TEXT_3,
-        Align::Left,
-    );
-    let mut y = y + 24.0;
-
-    if let Some(msg) = section_status(app.stock_photo_loading, app.stock_photos.len(), crate::stock::api_key().is_empty()) {
-        widgets::hint(ctx, Rect::new(body.x, y, body.w, 20.0), msg);
-        return y + 20.0 + 14.0;
-    }
-
-    let count = app.stock_photos.len();
-    let rows = (count as f32 / per_row as f32).ceil();
-    let grid = Rect::new(body.x, y, body.w, rows * (TILE_H + GAP));
-    let mut import: Option<usize> = None;
-    for i in 0..count {
-        let col = i % per_row;
-        let row = i / per_row;
-        let tile = Rect::new(grid.x + col as f32 * (TILE_W + GAP), grid.y + row as f32 * (TILE_H + GAP), TILE_W, TILE_H);
-        if tile.bottom() < body.y || tile.y > body.bottom() {
-            continue;
-        }
-        let id = id_of("stock-photo", i as u64);
-        let (hovered, _) = ctx.interact(id, tile);
-        if hovered {
-            ctx.cursor = Cursor::Hand;
-        }
-        let (thumb_rect, name_rect) = tile.split_top(TILE_H - 20.0);
-        let photo_id = app.stock_photos[i].id;
-        let preview = app.stock_thumbs.get(&photo_id).filter(|f| f.width > 1);
-        widgets::thumb(ctx, thumb_rect, preview.map(|f| (&f.rgba[..], f.width, f.height)));
-        let name = app.stock_photos[i].photographer.clone();
-        ctx.painter.label(name_rect, &name, FS_SMALL, Weight::Regular, TEXT_2, Align::Left);
-        if ctx.is_active(id) && dragging_far(ctx) {
-            ctx.drag_payload = Some(DragPayload::StockPhoto(i));
-        }
-        if hovered && ctx.double_click {
-            import = Some(i);
-        }
-    }
-    if let Some(i) = import {
-        let photo = app.stock_photos[i].clone();
-        app.import_stock_photo(&photo, None);
-    }
-    y = grid.bottom() + GAP;
-    if app.stock_photo_more {
-        let btn = Rect::new(body.x, y, 100.0, 26.0);
-        if widgets::button(ctx, id_of("stock-photo-more", 0), btn, "Load more", ButtonStyle::Normal) {
-            app.load_more_stock_photos();
-        }
-        y += 34.0;
-    }
-    y + 14.0
-}
-
-fn draw_stock_video_section(app: &mut App, ctx: &mut Ctx, body: Rect, y: f32, per_row: usize) -> f32 {
-    ctx.painter.label(
-        Rect::new(body.x, y, body.w, 20.0),
-        &format!("Video  {}", app.stock_videos.len()),
-        FS_SMALL,
-        Weight::Bold,
-        TEXT_3,
-        Align::Left,
-    );
-    let mut y = y + 24.0;
-
-    if let Some(msg) = section_status(app.stock_video_loading, app.stock_videos.len(), crate::stock::api_key().is_empty()) {
-        widgets::hint(ctx, Rect::new(body.x, y, body.w, 20.0), msg);
-        return y + 20.0 + 14.0;
-    }
-
-    let count = app.stock_videos.len();
-    let rows = (count as f32 / per_row as f32).ceil();
-    let grid = Rect::new(body.x, y, body.w, rows * (TILE_H + GAP));
-    let mut import: Option<usize> = None;
-    for i in 0..count {
-        let col = i % per_row;
-        let row = i / per_row;
-        let tile = Rect::new(grid.x + col as f32 * (TILE_W + GAP), grid.y + row as f32 * (TILE_H + GAP), TILE_W, TILE_H);
-        if tile.bottom() < body.y || tile.y > body.bottom() {
-            continue;
-        }
-        let id = id_of("stock-video", i as u64);
-        let (hovered, _) = ctx.interact(id, tile);
-        if hovered {
-            ctx.cursor = Cursor::Hand;
-        }
-        let (thumb_rect, name_rect) = tile.split_top(TILE_H - 20.0);
-        let video_id = app.stock_videos[i].id;
-        let preview = app.stock_video_thumbs.get(&video_id).filter(|f| f.width > 1);
-        widgets::thumb(ctx, thumb_rect, preview.map(|f| (&f.rgba[..], f.width, f.height)));
-        let badge_text = format_duration(app.stock_videos[i].duration);
-        let bw = ctx.painter.text_width(&badge_text, FS_SMALL, Weight::Regular) + 10.0;
-        let badge = Rect::new(thumb_rect.right() - bw - 4.0, thumb_rect.bottom() - 18.0, bw, 14.0);
-        ctx.painter.round_rect(badge, 3.0, rgba(0x000000, 190));
-        ctx.painter.label(badge, &badge_text, FS_SMALL, Weight::Regular, TEXT_2, Align::Center);
-        let name = app.stock_videos[i].photographer.clone();
-        ctx.painter.label(name_rect, &name, FS_SMALL, Weight::Regular, TEXT_2, Align::Left);
-        if ctx.is_active(id) && dragging_far(ctx) {
-            ctx.drag_payload = Some(DragPayload::StockVideo(i));
-        }
-        if hovered && ctx.double_click {
-            import = Some(i);
-        }
-    }
-    if let Some(i) = import {
-        let video = app.stock_videos[i].clone();
-        app.import_stock_video(&video, None);
-    }
-    y = grid.bottom() + GAP;
-    if app.stock_video_more {
-        let btn = Rect::new(body.x, y, 100.0, 26.0);
-        if widgets::button(ctx, id_of("stock-video-more", 0), btn, "Load more", ButtonStyle::Normal) {
-            app.load_more_stock_videos();
-        }
-        y += 34.0;
-    }
-    y + 14.0
-}
-
-fn draw_stock_audio_section(app: &mut App, ctx: &mut Ctx, body: Rect, y: f32, per_row: usize) -> f32 {
-    ctx.painter.label(
-        Rect::new(body.x, y, body.w, 20.0),
-        &format!("Audio  {}", app.stock_audio.len()),
-        FS_SMALL,
-        Weight::Bold,
-        TEXT_3,
-        Align::Left,
-    );
-    let mut y = y + 24.0;
-
-    if let Some(msg) = section_status(app.stock_audio_loading, app.stock_audio.len(), crate::freesound::api_key().is_empty()) {
-        widgets::hint(ctx, Rect::new(body.x, y, body.w, 20.0), msg);
-        return y + 20.0 + 14.0;
-    }
-
-    let count = app.stock_audio.len();
-    let rows = (count as f32 / per_row as f32).ceil();
-    let grid = Rect::new(body.x, y, body.w, rows * (TILE_H + GAP));
-    let mut import: Option<usize> = None;
-    for i in 0..count {
-        let col = i % per_row;
-        let row = i / per_row;
-        let tile = Rect::new(grid.x + col as f32 * (TILE_W + GAP), grid.y + row as f32 * (TILE_H + GAP), TILE_W, TILE_H);
-        if tile.bottom() < body.y || tile.y > body.bottom() {
-            continue;
-        }
-        let id = id_of("stock-audio", i as u64);
-        let (hovered, _) = ctx.interact(id, tile);
-        if hovered {
-            ctx.cursor = Cursor::Hand;
-        }
-        let (thumb_rect, name_rect) = tile.split_top(TILE_H - 20.0);
-        widgets::thumb(ctx, thumb_rect, None);
-        widgets::draw_icon(
-            ctx,
-            Icon::Audio,
-            Rect::new(thumb_rect.cx() - 14.0, thumb_rect.cy() - 14.0, 28.0, 28.0),
-            TEXT_3,
-        );
-        let badge_text = format_duration(app.stock_audio[i].duration);
-        let bw = ctx.painter.text_width(&badge_text, FS_SMALL, Weight::Regular) + 10.0;
-        let badge = Rect::new(thumb_rect.right() - bw - 4.0, thumb_rect.bottom() - 18.0, bw, 14.0);
-        ctx.painter.round_rect(badge, 3.0, rgba(0x000000, 190));
-        ctx.painter.label(badge, &badge_text, FS_SMALL, Weight::Regular, TEXT_2, Align::Center);
-        let name = app.stock_audio[i].name.clone();
-        ctx.painter.label(name_rect, &name, FS_SMALL, Weight::Regular, TEXT_2, Align::Left);
-        if ctx.is_active(id) && dragging_far(ctx) {
-            ctx.drag_payload = Some(DragPayload::StockAudio(i));
-        }
-        if hovered && ctx.double_click {
-            import = Some(i);
-        }
-    }
-    if let Some(i) = import {
-        let audio = app.stock_audio[i].clone();
-        app.import_stock_audio(&audio, None);
-    }
-    y = grid.bottom() + GAP;
-    if app.stock_audio_more {
-        let btn = Rect::new(body.x, y, 100.0, 26.0);
-        if widgets::button(ctx, id_of("stock-audio-more", 0), btn, "Load more", ButtonStyle::Normal) {
-            app.load_more_stock_audio();
-        }
-        y += 34.0;
-    }
-    y + 14.0
-}
-
 /// A press only becomes a drag once the pointer has actually travelled.
 fn dragging_far(ctx: &Ctx) -> bool {
     let dx = ctx.mouse.0 - ctx.drag_origin.0;
@@ -434,21 +361,8 @@ fn draw_drag_ghost(app: &App, ctx: &mut Ctx) {
             .map(|a| a.name.clone())
             .unwrap_or_else(|| "Clip".into()),
         DragPayload::Text => "Text".into(),
-        DragPayload::StockPhoto(i) => app
-            .stock_photos
-            .get(*i)
-            .map(|p| p.photographer.clone())
-            .unwrap_or_else(|| "Photo".into()),
-        DragPayload::StockVideo(i) => app
-            .stock_videos
-            .get(*i)
-            .map(|v| v.photographer.clone())
-            .unwrap_or_else(|| "Video".into()),
-        DragPayload::StockAudio(i) => app
-            .stock_audio
-            .get(*i)
-            .map(|a| a.name.clone())
-            .unwrap_or_else(|| "Audio".into()),
+        DragPayload::StockPhoto(_) => "Photo".into(),
+        DragPayload::StockVideo(_) => "Video".into(),
     };
     let w = ctx.painter.text_width(&label, FS_SMALL, Weight::Regular) + 22.0;
     let r = Rect::new(ctx.mouse.0 + 12.0, ctx.mouse.1 + 10.0, w.min(180.0), 22.0);

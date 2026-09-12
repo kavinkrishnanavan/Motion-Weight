@@ -742,7 +742,6 @@ fn handle_library_drop(app: &mut App, ctx: &mut Ctx, area: Rect, lanes: &[Rect])
         DragPayload::Text => (ClipKind::Text, 3.0),
         DragPayload::StockPhoto(_) => (ClipKind::Image, 3.0),
         DragPayload::StockVideo(i) => (ClipKind::Video, app.stock_videos.get(*i).map(|v| v.duration).unwrap_or(3.0)),
-        DragPayload::StockAudio(i) => (ClipKind::Audio, app.stock_audio.get(*i).map(|a| a.duration).unwrap_or(3.0)),
         DragPayload::Asset(id) => match app.store.asset(*id) {
             Some(a) => (
                 ClipKind::from(a.kind),
@@ -815,11 +814,6 @@ fn handle_library_drop(app: &mut App, ctx: &mut Ctx, area: Rect, lanes: &[Rect])
         DragPayload::StockVideo(index) => {
             if let Some(video) = app.stock_videos.get(index).cloned() {
                 app.import_stock_video(&video, Some((track_id, start)));
-            }
-        }
-        DragPayload::StockAudio(index) => {
-            if let Some(audio) = app.stock_audio.get(index).cloned() {
-                app.import_stock_audio(&audio, Some((track_id, start)));
             }
         }
     }

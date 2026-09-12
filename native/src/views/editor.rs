@@ -287,8 +287,8 @@ fn draw_rail(app: &mut App, ctx: &mut Ctx, r: Rect) {
         if clicked {
             app.library_tab = tab;
             app.library_scroll = 0.0;
-            let stock_empty = app.stock_photos.is_empty() && app.stock_videos.is_empty() && app.stock_audio.is_empty();
-            let stock_loading = app.stock_photo_loading || app.stock_video_loading || app.stock_audio_loading;
+            let stock_empty = app.stock_photos.is_empty() && app.stock_videos.is_empty();
+            let stock_loading = app.stock_photo_loading || app.stock_video_loading;
             if tab == LibraryTab::Stock && stock_empty && !stock_loading {
                 app.run_stock_search();
             }

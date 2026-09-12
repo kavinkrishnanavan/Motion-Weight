@@ -15,7 +15,6 @@ mod color;
 mod decode;
 mod exporter;
 mod ffmpeg;
-mod freesound;
 mod mask;
 mod media;
 mod model;

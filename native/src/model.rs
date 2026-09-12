@@ -248,6 +248,25 @@ pub const TRANSITIONS: [(TransitionType, &str); 30] = [
     (TransitionType::WhipPan, "Whip pan"),
 ];
 
+/// Text is drawn as shaped glyphs, not a bitmap `render_transitioned` can
+/// wipe, slice or pixelate — so it only ever reads a transition's alpha,
+/// scale and offset (see `Preview::draw_clip`'s text branch). Offering the
+/// full catalog would let a text clip "select" a wipe or a glitch that then
+/// visibly does nothing; this is the subset that's actually honored.
+pub const TEXT_TRANSITIONS: [(TransitionType, &str); 11] = [
+    (TransitionType::None, "None"),
+    (TransitionType::Fade, "Fade"),
+    (TransitionType::CrossDissolve, "Cross dissolve"),
+    (TransitionType::PushLeft, "Push left"),
+    (TransitionType::PushRight, "Push right"),
+    (TransitionType::PushUp, "Push up"),
+    (TransitionType::PushDown, "Push down"),
+    (TransitionType::SlideLeft, "Slide left"),
+    (TransitionType::SlideRight, "Slide right"),
+    (TransitionType::ZoomIn, "Zoom in"),
+    (TransitionType::ZoomOut, "Zoom out"),
+];
+
 impl TransitionType {
     /// The out-transition that mirrors a given in-transition.
     pub fn opposite(self) -> TransitionType {

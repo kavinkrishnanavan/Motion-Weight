@@ -6,6 +6,7 @@ use crate::color;
 use crate::decode::Frame;
 use crate::model::*;
 use crate::transitions::TransitionState;
+use crate::ui::paint::Blit;
 use crate::ui::widgets::{self, ButtonStyle};
 use crate::ui::*;
 
@@ -69,7 +70,7 @@ pub fn draw(app: &mut App, ctx: &mut Ctx, full: Rect) {
             app.store.mask_editing =
                 clip.kind != ClipKind::Text && app.side_tab == SideTab::Mask && clip.mask.is_active();
             if clip.kind == ClipKind::Text {
-                text_props(app, ctx, content, &clip)
+                text_props(app, ctx, content, &clip, &tabs)
             } else {
                 media_props(app, ctx, content, &clip, &tabs)
             }
@@ -901,8 +902,10 @@ fn transitions_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
     let label_h = 16.0;
     let tile_h = thumb_h + label_h + 4.0;
     let phase = gallery_phase(app);
+    let catalog: &[(TransitionType, &str)] =
+        if clip.kind == ClipKind::Text { &TEXT_TRANSITIONS } else { &TRANSITIONS };
 
-    for (row, chunk) in TRANSITIONS.chunks(cols_n).enumerate() {
+    for (row, chunk) in catalog.chunks(cols_n).enumerate() {
         let row_r = col.row(tile_h + gap);
         for (ci, (kind, label)) in chunk.iter().enumerate() {
             let thumb = Rect::new(row_r.x + ci as f32 * (tile_w + gap), row_r.y, tile_w, thumb_h);
@@ -1034,16 +1037,151 @@ fn color_field(ctx: &mut Ctx, col: &mut Col, key: &str, label: &str, value: &str
         }
     }
     col.gap(8.0);
+
+    if let Some(v) = color_picker(ctx, key, col.row(104.0), result.as_deref().unwrap_or(value)) {
+        result = Some(v);
+    }
+    col.gap(8.0);
     result
 }
 
-fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip) -> f32 {
+/// A saturation/value square (tinted by the current hue) plus a hue strip
+/// beneath it — real point-and-click picking for any color, everywhere
+/// `color_field` is used, rather than only hex-typing or the fixed swatch
+/// row above. Rendered into a small buffer and blitted, since the painter
+/// has no per-pixel gradient fill of its own; the buffer is tiny enough
+/// (a few thousand pixels) that redrawing it every frame costs nothing.
+fn color_picker(ctx: &mut Ctx, key: &str, r: Rect, value: &str) -> Option<String> {
+    let sv_id = id_of(key, 40);
+    let hue_id = id_of(key, 41);
+    let (sv_rect, rest) = r.split_top((r.h - 22.0).max(40.0));
+    let (_, hue_rect) = rest.split_top(6.0);
+
+    let [r0, g0, b0] = parse_hex(value);
+    let (h, s, v) = rgb_to_hsv(r0, g0, b0);
+
+    let (sv_hover, _) = ctx.interact(sv_id, sv_rect);
+    let (hue_hover, _) = ctx.interact(hue_id, hue_rect);
+    if sv_hover || hue_hover || ctx.is_active(sv_id) || ctx.is_active(hue_id) {
+        ctx.cursor = Cursor::Hand;
+    }
+
+    const N: u32 = 40;
+    let mut buf = vec![0u8; (N * N * 4) as usize];
+    for y in 0..N {
+        for x in 0..N {
+            let s2 = x as f32 / (N - 1) as f32;
+            let v2 = 1.0 - y as f32 / (N - 1) as f32;
+            let [pr, pg, pb] = hsv_to_rgb(h, s2, v2);
+            let i = ((y * N + x) * 4) as usize;
+            buf[i] = pr;
+            buf[i + 1] = pg;
+            buf[i + 2] = pb;
+            buf[i + 3] = 255;
+        }
+    }
+    ctx.painter.blit(&buf, N, N, sv_rect, &Blit::default());
+    ctx.painter.stroke_round_rect(sv_rect, R_SM, BORDER, 1.0);
+    let cursor = Rect::new(sv_rect.x + s * sv_rect.w - 4.0, sv_rect.y + (1.0 - v) * sv_rect.h - 4.0, 8.0, 8.0);
+    ctx.painter.stroke_round_rect(cursor, 4.0, TEXT, 1.5);
+
+    const HN: u32 = 64;
+    let mut hbuf = vec![0u8; (HN * 4) as usize];
+    for x in 0..HN {
+        let hue = x as f32 / (HN - 1) as f32 * 360.0;
+        let [pr, pg, pb] = hsv_to_rgb(hue, 1.0, 1.0);
+        let i = (x * 4) as usize;
+        hbuf[i] = pr;
+        hbuf[i + 1] = pg;
+        hbuf[i + 2] = pb;
+        hbuf[i + 3] = 255;
+    }
+    ctx.painter.blit(&hbuf, HN, 1, hue_rect, &Blit::default());
+    ctx.painter.stroke_round_rect(hue_rect, 3.0, BORDER, 1.0);
+    let marker_x = hue_rect.x + (h / 360.0) * hue_rect.w;
+    ctx.painter
+        .stroke_round_rect(Rect::new(marker_x - 2.0, hue_rect.y - 2.0, 4.0, hue_rect.h + 4.0), 2.0, TEXT, 1.5);
+
+    let new_hsv = if ctx.is_active(sv_id) {
+        let ns = ((ctx.mouse.0 - sv_rect.x) / sv_rect.w).clamp(0.0, 1.0);
+        let nv = (1.0 - (ctx.mouse.1 - sv_rect.y) / sv_rect.h).clamp(0.0, 1.0);
+        Some((h, ns, nv))
+    } else if ctx.is_active(hue_id) {
+        let nh = ((ctx.mouse.0 - hue_rect.x) / hue_rect.w).clamp(0.0, 1.0) * 360.0;
+        Some((nh, s, v))
+    } else {
+        None
+    };
+    new_hsv.map(|(h, s, v)| {
+        let [nr, ng, nb] = hsv_to_rgb(h, s, v);
+        format!("#{nr:02x}{ng:02x}{nb:02x}")
+    })
+}
+
+fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let (r, g, b) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let delta = max - min;
+    let h = if delta < 1e-6 {
+        0.0
+    } else if max == r {
+        60.0 * (((g - b) / delta).rem_euclid(6.0))
+    } else if max == g {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+    let s = if max < 1e-6 { 0.0 } else { delta / max };
+    (h, s, max)
+}
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
+    let c = v * s;
+    let hp = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = if hp < 1.0 {
+        (c, x, 0.0)
+    } else if hp < 2.0 {
+        (x, c, 0.0)
+    } else if hp < 3.0 {
+        (0.0, c, x)
+    } else if hp < 4.0 {
+        (0.0, x, c)
+    } else if hp < 5.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    let m = v - c;
+    [
+        ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+    ]
+}
+
+fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[SideTab]) -> f32 {
     let mut col = Col::new(area);
     let id = clip.id;
     let s = app.store.project.settings;
     let (pw, ph) = (s.width as f32, s.height as f32);
-    title(ctx, &mut col, "Text");
-    col.gap(6.0);
+    tab_bar(app, ctx, &mut col, tabs);
+
+    if app.side_tab == SideTab::Transitions {
+        transitions_tab(app, ctx, &mut col, clip);
+        col.gap(16.0);
+        if widgets::button(
+            ctx,
+            id_of("txt-remove", 0),
+            col.row(FIELD_H + 4.0),
+            "Remove Text",
+            ButtonStyle::Danger,
+        ) {
+            app.store.remove_clip(id);
+        }
+        return col.used();
+    }
 
     widgets::field_label(ctx, col.row(18.0), "Content");
     if let Some(v) = widgets::text_field(ctx, id_of("txt-content", 0), col.row(FIELD_H), &clip.text, "Text") {
