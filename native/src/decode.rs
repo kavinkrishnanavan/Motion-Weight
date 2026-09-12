@@ -113,7 +113,20 @@ pub struct ClipDecoder {
     parked: bool,
     park: Arc<AtomicBool>,
     pub last_touched: std::time::Instant,
+    /// When the requested time first stopped moving, so parking waits out
+    /// `PARK_GRACE_S` instead of killing ffmpeg the instant playback pauses.
+    /// A pause-glance-resume inside that window costs nothing; only a pause
+    /// that actually sticks around pays for the UI-starvation guard.
+    idle_since: Option<std::time::Instant>,
 }
+
+/// How long the requested time has to sit still before the decoder actually
+/// parks (kills ffmpeg). Resuming a parked decoder always re-seeks — cheap
+/// most of the time, but occasionally a real, visible catch-up delay (see
+/// `motionweight-seek-timeout-retry`) — so a pause shorter than this, the
+/// common "glance at a frame, hit play again" case, skips paying that cost
+/// at all instead of paying it on every single pause.
+const PARK_GRACE_S: f32 = 0.6;
 
 /// How long a seek is allowed to run before producing even one frame, in real
 /// wall-clock seconds, before it is judged stuck and retried. Generous: a slow
@@ -163,6 +176,7 @@ impl ClipDecoder {
             parked: false,
             park,
             last_touched: std::time::Instant::now(),
+            idle_since: None,
         }
     }
 
@@ -188,6 +202,9 @@ impl ClipDecoder {
         // to the new position, reading as "not playing from there".
         let jumped = delta.abs() > JUMP_THRESHOLD_S;
         self.last_request = t;
+        if moved {
+            self.idle_since = None;
+        }
         if moved && self.parked {
             self.parked = false;
             self.park.store(false, Ordering::SeqCst);
@@ -280,8 +297,11 @@ impl ClipDecoder {
         if !moved && !self.parked && self.current_gen == self.stream_gen {
             if let Some((ts, _)) = &self.current {
                 if *ts >= t - 1.0 / self.fps.max(1.0) {
-                    self.parked = true;
-                    self.park.store(true, Ordering::SeqCst);
+                    let idle_since = *self.idle_since.get_or_insert_with(std::time::Instant::now);
+                    if idle_since.elapsed().as_secs_f32() > PARK_GRACE_S {
+                        self.parked = true;
+                        self.park.store(true, Ordering::SeqCst);
+                    }
                 }
             }
         }
