@@ -296,10 +296,14 @@ impl Preview {
         // Not on the same idle timer as the caches above — a clip whose
         // decoder or still gets evicted while still on screen (e.g. the
         // `MAX_DECODERS` cap under many tracks) would otherwise leave an
-        // orphaned graded entry behind that nothing ever reads again.
-        let live: std::collections::HashSet<Id> =
-            self.decoders.keys().chain(self.stills.keys()).copied().collect();
-        self.graded_cache.retain(|id, _| live.contains(id));
+        // orphaned graded entry behind that nothing ever reads again. Cheap
+        // to skip entirely on the common frame where nothing was evicted,
+        // rather than building the lookup set on every single redraw.
+        if self.graded_cache.len() > self.decoders.len() + self.stills.len() {
+            let live: std::collections::HashSet<Id> =
+                self.decoders.keys().chain(self.stills.keys()).copied().collect();
+            self.graded_cache.retain(|id, _| live.contains(id));
+        }
     }
 
     /// Loads and caches the LUT at `path` (a no-op, returning the cached
