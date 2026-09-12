@@ -576,15 +576,16 @@ fn curve_editor(ctx: &mut Ctx, col: &mut Col, points: &[(f32, f32)]) -> Option<V
         (((x - graph.x) / graph.w).clamp(0.0, 1.0), ((graph.bottom() - y) / graph.h).clamp(0.0, 1.0))
     };
 
-    // The curve line first, so the point handles draw on top of it.
+    // The curve line first, so the point handles draw on top of it. Traced as
+    // one stroked path rather than 48 separate `line` calls: each `line` call
+    // builds its own path and pays for its own anti-aliased fill, so this
+    // used to mean 48 path allocations and fills every single redraw the
+    // Color tab was open, not just while dragging a point.
     let steps = 48;
-    let mut prev = to_screen((0.0, color::eval_curve(&pts, 0.0)));
-    for i in 1..=steps {
-        let x = i as f32 / steps as f32;
-        let p = to_screen((x, color::eval_curve(&pts, x)));
-        ctx.painter.line(prev.0, prev.1, p.0, p.1, ACCENT, 1.6);
-        prev = p;
-    }
+    let curve_pts: Vec<(f32, f32)> = (0..=steps)
+        .map(|i| to_screen((i as f32 / steps as f32, color::eval_curve(&pts, i as f32 / steps as f32))))
+        .collect();
+    ctx.painter.polyline(&curve_pts, ACCENT, 1.6);
 
     let mut changed: Option<Vec<(f32, f32)>> = None;
     let radius = 5.0;

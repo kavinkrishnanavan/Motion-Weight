@@ -392,6 +392,25 @@ impl Painter {
         self.stroke_path(&path, color, width);
     }
 
+    /// A connected multi-segment line, stroked as one path. Prefer this over
+    /// calling `line` in a loop for anything traced point-by-point (a curve,
+    /// a waveform): each `line`/`stroke_path` call builds its own path and
+    /// pays for its own anti-aliased stroke fill, so tracing an N-segment
+    /// curve that way is N allocations and N fills every single redraw
+    /// instead of one — the cost is paid just for the widget being visible,
+    /// not only while it's being interacted with.
+    pub fn polyline(&mut self, pts: &[(f32, f32)], color: Color, width: f32) {
+        let mut iter = pts.iter();
+        let Some(&(x0, y0)) = iter.next() else { return };
+        let mut pb = PathBuilder::new();
+        pb.move_to(x0, y0);
+        for &(x, y) in iter {
+            pb.line_to(x, y);
+        }
+        let Some(path) = pb.finish() else { return };
+        self.stroke_path(&path, color, width);
+    }
+
     /// A one-pixel hairline, snapped to the pixel grid so it stays crisp.
     pub fn hline(&mut self, x0: f32, x1: f32, y: f32, color: Color) {
         self.rect(Rect::new(x0, y.floor(), x1 - x0, 1.0), color);
