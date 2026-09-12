@@ -421,17 +421,23 @@ impl Preview {
         if clip.kind == ClipKind::Text {
             let scale = stage.w / settings.width as f32;
             let size = (clip.font_size * scale * st.scale).max(4.0);
+            let weight = weight_of(clip);
+            let family = clip.font_family.as_str();
+            let spacing = clip.letter_spacing * scale;
+            let shown = if clip.uppercase { clip.text.to_uppercase() } else { clip.text.clone() };
             let cx = stage.x + (clip.x + st.offset_x) * stage.w;
             let cy = stage.y + (clip.y + st.offset_y) * stage.h;
-            let w = ctx.painter.text_width(&clip.text, size, weight_of(clip));
-            let ascent = ctx.painter.ascent(size, weight_of(clip));
-            let line = ctx.painter.line_height(size, weight_of(clip));
+            let w = ctx.painter.text_width_styled(&shown, size, weight, family, spacing);
+            let ascent = ctx.painter.ascent_styled(size, weight, family);
+            let line = ctx.painter.line_height_styled(size, weight, family);
             let x = match clip.align {
                 TextAlign::Left => cx,
                 TextAlign::Center => cx - w / 2.0,
                 TextAlign::Right => cx - w,
             };
+            let baseline_y = cy - line / 2.0 + ascent;
             let alpha = clip.opacity * st.alpha;
+
             if clip.bg_enabled {
                 let pad = size * 0.22;
                 let bg = model_color(&clip.bg_color, alpha * 0.6);
@@ -441,9 +447,51 @@ impl Preview {
                     bg,
                 );
             }
+
+            // Glow: a few widening, fading rings drawn behind everything
+            // else — the closest a flat 2D compositor gets to a soft bloom
+            // without an actual blur pass over the glyphs.
+            if clip.glow_enabled {
+                let glow = model_color(&clip.glow_color, alpha);
+                for (radius, a_mul) in [(size * 0.05, 0.35), (size * 0.09, 0.22), (size * 0.14, 0.12)] {
+                    let c = [glow[0], glow[1], glow[2], (glow[3] as f32 * a_mul) as u8];
+                    for (dx, dy) in OUTLINE_DIRS {
+                        ctx.painter.text_styled(
+                            x + dx * radius,
+                            baseline_y + dy * radius,
+                            &shown,
+                            size,
+                            weight,
+                            family,
+                            spacing,
+                            c,
+                        );
+                    }
+                }
+            }
+
+            // Shadow: one soft offset copy behind the main text.
+            if clip.shadow_enabled {
+                let sh = model_color(&clip.shadow_color, alpha * 0.6);
+                let off = (size * 0.06).max(2.0);
+                ctx.painter
+                    .text_styled(x + off, baseline_y + off, &shown, size, weight, family, spacing, sh);
+            }
+
+            // Outline: eight offset copies in the outline color, then the
+            // real text on top — the standard "poor man's stroke" for a
+            // glyph renderer with no vector-outline stroking of its own.
+            if clip.outline_enabled {
+                let oc = model_color(&clip.outline_color, alpha);
+                let ow = clip.outline_width * scale;
+                for (dx, dy) in OUTLINE_DIRS {
+                    ctx.painter
+                        .text_styled(x + dx * ow, baseline_y + dy * ow, &shown, size, weight, family, spacing, oc);
+                }
+            }
+
             let color = model_color(&clip.color, alpha);
-            ctx.painter
-                .text(x, cy - line / 2.0 + ascent, &clip.text, size, weight_of(clip), color);
+            ctx.painter.text_styled(x, baseline_y, &shown, size, weight, family, spacing, color);
             return;
         }
 
@@ -809,6 +857,20 @@ impl Preview {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/// Eight unit directions used to fake a text stroke/glow by redrawing the
+/// whole string offset around the real position — diagonals normalized so
+/// they don't reach further than the axis-aligned ones.
+const OUTLINE_DIRS: [(f32, f32); 8] = [
+    (-1.0, 0.0),
+    (1.0, 0.0),
+    (0.0, -1.0),
+    (0.0, 1.0),
+    (-0.7071, -0.7071),
+    (0.7071, -0.7071),
+    (-0.7071, 0.7071),
+    (0.7071, 0.7071),
+];
 
 fn weight_of(clip: &Clip) -> Weight {
     Weight::of(clip.bold, clip.italic)

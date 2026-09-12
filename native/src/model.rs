@@ -546,6 +546,26 @@ pub struct Clip {
     pub bg_enabled: bool,
     #[serde(default = "default_black")]
     pub bg_color: String,
+    #[serde(default)]
+    pub uppercase: bool,
+    #[serde(default)]
+    pub letter_spacing: f32,
+    #[serde(default)]
+    pub outline_enabled: bool,
+    #[serde(default = "default_black")]
+    pub outline_color: String,
+    #[serde(default = "default_outline_width")]
+    pub outline_width: f32,
+    #[serde(default)]
+    pub glow_enabled: bool,
+    #[serde(default = "default_glow_color")]
+    pub glow_color: String,
+    #[serde(default)]
+    pub shadow_enabled: bool,
+    #[serde(default = "default_black")]
+    pub shadow_color: String,
+    #[serde(default)]
+    pub text_preset: TextPreset,
 }
 
 fn one() -> f32 {
@@ -565,6 +585,12 @@ fn default_font() -> String {
 }
 fn default_align() -> TextAlign {
     TextAlign::Center
+}
+fn default_outline_width() -> f32 {
+    2.0
+}
+fn default_glow_color() -> String {
+    "#00e5ff".into()
 }
 
 impl Clip {
@@ -610,6 +636,16 @@ impl Clip {
             align: TextAlign::Center,
             bg_enabled: false,
             bg_color: "#000000".into(),
+            uppercase: false,
+            letter_spacing: 0.0,
+            outline_enabled: false,
+            outline_color: "#000000".into(),
+            outline_width: default_outline_width(),
+            glow_enabled: false,
+            glow_color: default_glow_color(),
+            shadow_enabled: false,
+            shadow_color: "#000000".into(),
+            text_preset: TextPreset::Custom,
         }
     }
 
@@ -686,7 +722,407 @@ pub struct Selection {
     pub clip_id: Id,
 }
 
-pub const FONT_FAMILIES: [&str; 5] = ["Arial", "Georgia", "Impact", "Times New Roman", "Courier New"];
+/// Real Windows-shipped font files, each mapped to an actual distinct face
+/// in both the live preview (`ui::font::Fonts::family_index`) and export
+/// (`ffmpeg::font_file`) — not just a label. A handful of these fall back to
+/// the default face on a system missing that particular file (checked at
+/// load time, not assumed), which only softens a style rather than breaking it.
+pub const FONT_FAMILIES: [&str; 15] = [
+    "Arial",
+    "Segoe UI",
+    "Georgia",
+    "Times New Roman",
+    "Cambria",
+    "Impact",
+    "Courier New",
+    "Consolas",
+    "Comic Sans MS",
+    "Segoe Script",
+    "Segoe Print",
+    "Calibri",
+    "Trebuchet MS",
+    "Verdana",
+    "Bahnschrift",
+];
+
+/// A one-click starting point for a text clip's whole look: font, case,
+/// spacing, color, outline/glow/shadow, and a default entrance transition.
+/// `Custom` (last, so `#[serde(other)]` can fall an unknown future variant
+/// back onto it) means nothing here was picked, or the user has since
+/// hand-edited a style-affecting field away from what the preset set.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "kebab-case")]
+pub enum TextPreset {
+    Cinematic,
+    BoldImpact,
+    Minimal,
+    Typewriter,
+    Glitch,
+    NeonGlow,
+    RetroVhs,
+    Handwritten,
+    Luxury,
+    NewsBroadcast,
+    Documentary,
+    GamingHud,
+    ComicBook,
+    KineticTypography,
+    SocialMediaPop,
+    ElegantScript,
+    GlowingOutline,
+    Extruded3d,
+    Chrome,
+    PaperCutout,
+    Stamp,
+    OldFilm,
+    Terminal,
+    Sports,
+    Magazine,
+    Liquid,
+    Fire,
+    Ice,
+    Marker,
+    CleanCorporate,
+    #[serde(other)]
+    Custom,
+}
+
+impl Default for TextPreset {
+    fn default() -> Self {
+        TextPreset::Custom
+    }
+}
+
+pub const TEXT_PRESETS: [(TextPreset, &str); 31] = [
+    (TextPreset::Custom, "Custom"),
+    (TextPreset::Cinematic, "Cinematic"),
+    (TextPreset::BoldImpact, "Bold Impact"),
+    (TextPreset::Minimal, "Minimal"),
+    (TextPreset::Typewriter, "Typewriter"),
+    (TextPreset::Glitch, "Glitch"),
+    (TextPreset::NeonGlow, "Neon Glow"),
+    (TextPreset::RetroVhs, "Retro VHS"),
+    (TextPreset::Handwritten, "Handwritten"),
+    (TextPreset::Luxury, "Luxury"),
+    (TextPreset::NewsBroadcast, "News Broadcast"),
+    (TextPreset::Documentary, "Documentary"),
+    (TextPreset::GamingHud, "Gaming HUD"),
+    (TextPreset::ComicBook, "Comic Book"),
+    (TextPreset::KineticTypography, "Kinetic Typography"),
+    (TextPreset::SocialMediaPop, "Social Media Pop"),
+    (TextPreset::ElegantScript, "Elegant Script"),
+    (TextPreset::GlowingOutline, "Glowing Outline"),
+    (TextPreset::Extruded3d, "3D Extruded"),
+    (TextPreset::Chrome, "Chrome"),
+    (TextPreset::PaperCutout, "Paper Cutout"),
+    (TextPreset::Stamp, "Stamp"),
+    (TextPreset::OldFilm, "Old Film"),
+    (TextPreset::Terminal, "Terminal"),
+    (TextPreset::Sports, "Sports"),
+    (TextPreset::Magazine, "Magazine"),
+    (TextPreset::Liquid, "Liquid"),
+    (TextPreset::Fire, "Fire"),
+    (TextPreset::Ice, "Ice"),
+    (TextPreset::Marker, "Marker"),
+    (TextPreset::CleanCorporate, "Clean Corporate"),
+];
+
+/// One preset's concrete field values. A plain struct rather than writing
+/// straight into `Clip` from the `match` below, so every arm reads as a
+/// flat, comparable table instead of 30 blocks of field assignments.
+struct TextLook {
+    family: &'static str,
+    bold: bool,
+    italic: bool,
+    uppercase: bool,
+    letter_spacing: f32,
+    size: f32,
+    color: &'static str,
+    bg: bool,
+    bg_color: &'static str,
+    outline: bool,
+    outline_color: &'static str,
+    outline_width: f32,
+    glow: bool,
+    glow_color: &'static str,
+    shadow: bool,
+    shadow_color: &'static str,
+    transition: TransitionType,
+    duration: f32,
+}
+
+impl TextPreset {
+    /// Everything a style touches, applied at once; `Custom` is a no-op —
+    /// it means "whatever is already there", not "reset to some default".
+    pub fn apply(self, c: &mut Clip) {
+        use TransitionType::*;
+        let l = match self {
+            TextPreset::Custom => return,
+            TextPreset::Cinematic => TextLook {
+                family: "Georgia", bold: false, italic: false, uppercase: false, letter_spacing: 6.0,
+                size: 72.0, color: "#ffffff", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: true, shadow_color: "#000000",
+                transition: Fade, duration: 1.2,
+            },
+            TextPreset::BoldImpact => TextLook {
+                family: "Impact", bold: true, italic: false, uppercase: true, letter_spacing: 1.0,
+                size: 96.0, color: "#ffffff", bg: false, bg_color: "#000000",
+                outline: true, outline_color: "#000000", outline_width: 4.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: ZoomIn, duration: 0.4,
+            },
+            TextPreset::Minimal => TextLook {
+                family: "Segoe UI", bold: false, italic: false, uppercase: false, letter_spacing: 1.0,
+                size: 40.0, color: "#e8e8ea", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.6,
+            },
+            TextPreset::Typewriter => TextLook {
+                family: "Courier New", bold: false, italic: false, uppercase: false, letter_spacing: 3.0,
+                size: 56.0, color: "#ffffff", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.5,
+            },
+            TextPreset::Glitch => TextLook {
+                family: "Consolas", bold: true, italic: false, uppercase: true, letter_spacing: 2.0,
+                size: 64.0, color: "#ffffff", bg: false, bg_color: "#000000",
+                outline: true, outline_color: "#ff00e6", outline_width: 2.0,
+                glow: true, glow_color: "#00fff9",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.15,
+            },
+            TextPreset::NeonGlow => TextLook {
+                family: "Segoe UI", bold: true, italic: false, uppercase: false, letter_spacing: 0.5,
+                size: 72.0, color: "#ffffff", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: true, glow_color: "#39c7ff",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.8,
+            },
+            TextPreset::RetroVhs => TextLook {
+                family: "Impact", bold: true, italic: false, uppercase: true, letter_spacing: 1.0,
+                size: 68.0, color: "#ffffff", bg: false, bg_color: "#000000",
+                outline: true, outline_color: "#ff2b6d", outline_width: 2.0,
+                glow: true, glow_color: "#2bdcff",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.3,
+            },
+            TextPreset::Handwritten => TextLook {
+                family: "Segoe Script", bold: false, italic: false, uppercase: false, letter_spacing: 0.0,
+                size: 60.0, color: "#fff7e0", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.9,
+            },
+            TextPreset::Luxury => TextLook {
+                family: "Cambria", bold: false, italic: false, uppercase: true, letter_spacing: 8.0,
+                size: 52.0, color: "#e9d8a6", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: true, shadow_color: "#000000",
+                transition: Fade, duration: 1.4,
+            },
+            TextPreset::NewsBroadcast => TextLook {
+                family: "Arial", bold: true, italic: false, uppercase: true, letter_spacing: 1.0,
+                size: 48.0, color: "#ffffff", bg: true, bg_color: "#c8102e",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: PushLeft, duration: 0.5,
+            },
+            TextPreset::Documentary => TextLook {
+                family: "Georgia", bold: false, italic: false, uppercase: false, letter_spacing: 0.5,
+                size: 44.0, color: "#f2f2f2", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 1.0,
+            },
+            TextPreset::GamingHud => TextLook {
+                family: "Consolas", bold: true, italic: false, uppercase: true, letter_spacing: 3.0,
+                size: 48.0, color: "#00ffbf", bg: false, bg_color: "#000000",
+                outline: true, outline_color: "#003b33", outline_width: 1.5,
+                glow: true, glow_color: "#00ffbf",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.3,
+            },
+            TextPreset::ComicBook => TextLook {
+                family: "Comic Sans MS", bold: true, italic: false, uppercase: true, letter_spacing: 1.0,
+                size: 80.0, color: "#ffe600", bg: false, bg_color: "#000000",
+                outline: true, outline_color: "#000000", outline_width: 5.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: true, shadow_color: "#000000",
+                transition: ZoomIn, duration: 0.35,
+            },
+            // A single clip is one rigid transform, not a sentence of
+            // independently-timed words — the closest honest approximation
+            // is a clean, energetic whole-clip pop rather than a literal
+            // per-word breakdown.
+            TextPreset::KineticTypography => TextLook {
+                family: "Segoe UI", bold: true, italic: false, uppercase: false, letter_spacing: 0.5,
+                size: 64.0, color: "#ffffff", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: ZoomIn, duration: 0.5,
+            },
+            TextPreset::SocialMediaPop => TextLook {
+                family: "Calibri", bold: true, italic: false, uppercase: false, letter_spacing: 0.5,
+                size: 72.0, color: "#ffffff", bg: false, bg_color: "#000000",
+                outline: true, outline_color: "#ff3d81", outline_width: 3.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: ZoomIn, duration: 0.3,
+            },
+            TextPreset::ElegantScript => TextLook {
+                family: "Segoe Script", bold: false, italic: false, uppercase: false, letter_spacing: 0.0,
+                size: 64.0, color: "#ffffff", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 1.0,
+            },
+            TextPreset::GlowingOutline => TextLook {
+                family: "Segoe UI", bold: true, italic: false, uppercase: true, letter_spacing: 2.0,
+                size: 72.0, color: "#0b0b0b", bg: false, bg_color: "#000000",
+                outline: true, outline_color: "#ffffff", outline_width: 2.0,
+                glow: true, glow_color: "#7fe0ff",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.6,
+            },
+            TextPreset::Extruded3d => TextLook {
+                family: "Impact", bold: true, italic: false, uppercase: true, letter_spacing: 1.0,
+                size: 84.0, color: "#ffffff", bg: false, bg_color: "#000000",
+                outline: true, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: true, shadow_color: "#4a4a4a",
+                transition: ZoomIn, duration: 0.4,
+            },
+            TextPreset::Chrome => TextLook {
+                family: "Arial", bold: true, italic: false, uppercase: true, letter_spacing: 1.0,
+                size: 76.0, color: "#d9d9e0", bg: false, bg_color: "#000000",
+                outline: true, outline_color: "#5a5a63", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.6,
+            },
+            TextPreset::PaperCutout => TextLook {
+                family: "Calibri", bold: true, italic: false, uppercase: false, letter_spacing: 1.0,
+                size: 60.0, color: "#ffffff", bg: true, bg_color: "#2b6ef2",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: true, shadow_color: "#000000",
+                transition: ZoomIn, duration: 0.4,
+            },
+            TextPreset::Stamp => TextLook {
+                family: "Impact", bold: true, italic: false, uppercase: true, letter_spacing: 3.0,
+                size: 52.0, color: "#c81e3a", bg: false, bg_color: "#000000",
+                outline: true, outline_color: "#c81e3a", outline_width: 3.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: ZoomIn, duration: 0.2,
+            },
+            TextPreset::OldFilm => TextLook {
+                family: "Times New Roman", bold: false, italic: false, uppercase: false, letter_spacing: 1.0,
+                size: 56.0, color: "#e8dcc0", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: true, shadow_color: "#000000",
+                transition: Fade, duration: 1.0,
+            },
+            TextPreset::Terminal => TextLook {
+                family: "Consolas", bold: false, italic: false, uppercase: false, letter_spacing: 1.0,
+                size: 48.0, color: "#33ff66", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: true, glow_color: "#33ff66",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.4,
+            },
+            TextPreset::Sports => TextLook {
+                family: "Impact", bold: true, italic: true, uppercase: true, letter_spacing: 1.0,
+                size: 88.0, color: "#ffffff", bg: false, bg_color: "#000000",
+                outline: true, outline_color: "#111111", outline_width: 4.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: PushLeft, duration: 0.35,
+            },
+            TextPreset::Magazine => TextLook {
+                family: "Georgia", bold: true, italic: false, uppercase: false, letter_spacing: 1.0,
+                size: 72.0, color: "#ffffff", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.7,
+            },
+            TextPreset::Liquid => TextLook {
+                family: "Calibri", bold: true, italic: false, uppercase: false, letter_spacing: 0.5,
+                size: 68.0, color: "#3fd0ff", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: true, glow_color: "#0090c7",
+                shadow: false, shadow_color: "#000000",
+                transition: ZoomOut, duration: 0.6,
+            },
+            TextPreset::Fire => TextLook {
+                family: "Impact", bold: true, italic: false, uppercase: true, letter_spacing: 1.0,
+                size: 80.0, color: "#ffb020", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: true, glow_color: "#ff3d00",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.4,
+            },
+            TextPreset::Ice => TextLook {
+                family: "Segoe UI", bold: false, italic: false, uppercase: true, letter_spacing: 2.0,
+                size: 64.0, color: "#dff6ff", bg: false, bg_color: "#000000",
+                outline: true, outline_color: "#8fe3ff", outline_width: 1.5,
+                glow: true, glow_color: "#8fe3ff",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.7,
+            },
+            TextPreset::Marker => TextLook {
+                family: "Segoe Print", bold: true, italic: false, uppercase: false, letter_spacing: 0.5,
+                size: 56.0, color: "#111111", bg: true, bg_color: "#ffe14d",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.5,
+            },
+            TextPreset::CleanCorporate => TextLook {
+                family: "Calibri", bold: false, italic: false, uppercase: false, letter_spacing: 0.5,
+                size: 48.0, color: "#ffffff", bg: false, bg_color: "#000000",
+                outline: false, outline_color: "#000000", outline_width: 2.0,
+                glow: false, glow_color: "#00e5ff",
+                shadow: false, shadow_color: "#000000",
+                transition: Fade, duration: 0.5,
+            },
+        };
+        c.font_family = l.family.to_string();
+        c.bold = l.bold;
+        c.italic = l.italic;
+        c.uppercase = l.uppercase;
+        c.letter_spacing = l.letter_spacing;
+        c.font_size = l.size;
+        c.color = l.color.to_string();
+        c.bg_enabled = l.bg;
+        c.bg_color = l.bg_color.to_string();
+        c.outline_enabled = l.outline;
+        c.outline_color = l.outline_color.to_string();
+        c.outline_width = l.outline_width;
+        c.glow_enabled = l.glow;
+        c.glow_color = l.glow_color.to_string();
+        c.shadow_enabled = l.shadow;
+        c.shadow_color = l.shadow_color.to_string();
+        c.transition_in = Transition { kind: l.transition, duration: l.duration };
+        c.text_preset = self;
+    }
+}
 
 pub const RESOLUTION_PRESETS: [(&str, u32, u32); 4] = [
     ("16:9  1920x1080", 1920, 1080),

@@ -120,6 +120,13 @@ pub struct ExportClip {
     pub bold: bool,
     pub italic: bool,
     pub bg_color: Option<String>,
+    /// `(color, width)` — ffmpeg's `drawtext` has one border slot, so glow
+    /// and outline (preview draws both, layered) collapse to whichever one
+    /// is on, preferring outline when both are, since it reads as the more
+    /// deliberate choice of the two.
+    pub border: Option<(String, f32)>,
+    /// `(color, offset)`.
+    pub shadow: Option<(String, f32)>,
     pub crop: Crop,
     /// `None` when the clip has no grading applied — `is_active()` was
     /// already checked building this, so its mere presence here means work.
@@ -140,15 +147,47 @@ fn esc_drawtext(s: &str) -> String {
         .replace('\n', " ")
 }
 
+/// Mirrors `ui::font::family_files` — same families, same directory, same
+/// graceful fall-through to Arial for anything unrecognized or missing a
+/// particular weight's file on this machine (ffmpeg just errors on a
+/// missing `fontfile`, so this never hands it a guess it can't open).
 fn font_file(family: &str, bold: bool, italic: bool) -> String {
     let file = match (family, bold, italic) {
+        ("Segoe UI", true, _) => "segoeuib.ttf",
+        ("Segoe UI", false, true) => "segoeuii.ttf",
+        ("Segoe UI", false, false) => "segoeui.ttf",
         ("Georgia", true, _) => "georgiab.ttf",
-        ("Georgia", false, _) => "georgia.ttf",
-        ("Impact", _, _) => "impact.ttf",
+        ("Georgia", false, true) => "georgiai.ttf",
+        ("Georgia", false, false) => "georgia.ttf",
         ("Times New Roman", true, _) => "timesbd.ttf",
-        ("Times New Roman", false, _) => "times.ttf",
+        ("Times New Roman", false, true) => "timesi.ttf",
+        ("Times New Roman", false, false) => "times.ttf",
+        ("Cambria", true, _) => "cambriab.ttf",
+        ("Cambria", false, true) => "cambriai.ttf",
+        ("Cambria", false, false) => "cambria.ttf",
+        ("Impact", _, _) => "impact.ttf",
         ("Courier New", true, _) => "courbd.ttf",
-        ("Courier New", false, _) => "cour.ttf",
+        ("Courier New", false, true) => "couri.ttf",
+        ("Courier New", false, false) => "cour.ttf",
+        ("Consolas", true, _) => "consolab.ttf",
+        ("Consolas", false, true) => "consolai.ttf",
+        ("Consolas", false, false) => "consola.ttf",
+        ("Comic Sans MS", true, _) => "comicbd.ttf",
+        ("Comic Sans MS", false, _) => "comic.ttf",
+        ("Segoe Script", true, _) => "segoescb.ttf",
+        ("Segoe Script", false, _) => "segoesc.ttf",
+        ("Segoe Print", true, _) => "segoeprb.ttf",
+        ("Segoe Print", false, _) => "segoepr.ttf",
+        ("Calibri", true, _) => "calibrib.ttf",
+        ("Calibri", false, true) => "calibrii.ttf",
+        ("Calibri", false, false) => "calibri.ttf",
+        ("Trebuchet MS", true, _) => "trebucbd.ttf",
+        ("Trebuchet MS", false, true) => "trebucit.ttf",
+        ("Trebuchet MS", false, false) => "trebuc.ttf",
+        ("Verdana", true, _) => "verdanab.ttf",
+        ("Verdana", false, true) => "verdanai.ttf",
+        ("Verdana", false, false) => "verdana.ttf",
+        ("Bahnschrift", _, _) => "bahnschrift.ttf",
         (_, true, true) => "arialbi.ttf",
         (_, true, false) => "arialbd.ttf",
         (_, false, true) => "ariali.ttf",
@@ -763,9 +802,29 @@ fn build_graph(
                         Some(bg) => format!(":box=1:boxcolor={}:boxborderw=10", hex_to_ffcolor(bg, 0.6)),
                         None => String::new(),
                     };
+                    // ffmpeg's own `drawtext` border/shadow, standing in for
+                    // the preview's richer layered outline/glow — a real
+                    // stroke and drop shadow rather than an approximation
+                    // built from redrawn copies, since `drawtext` already
+                    // has both natively.
+                    let border_part = match &clip.border {
+                        Some((c, width)) => {
+                            format!(":bordercolor={}:borderw={}", hex_to_ffcolor(c, clip.opacity), width.max(0.5))
+                        }
+                        None => String::new(),
+                    };
+                    let shadow_part = match &clip.shadow {
+                        Some((c, off)) => format!(
+                            ":shadowcolor={}:shadowx={:.1}:shadowy={:.1}",
+                            hex_to_ffcolor(c, clip.opacity * 0.6),
+                            off,
+                            off
+                        ),
+                        None => String::new(),
+                    };
                     let next = format!("v{}", stage);
                     fc.push_str(&format!(
-                        "[{}]drawtext=fontfile='{}':text='{}':fontsize={}:fontcolor={}:x={}-text_w/2:y={}-text_h/2:enable='between(t,{:.3},{:.3})'{}[{}];",
+                        "[{}]drawtext=fontfile='{}':text='{}':fontsize={}:fontcolor={}:x={}-text_w/2:y={}-text_h/2:enable='between(t,{:.3},{:.3})'{}{}{}[{}];",
                         running,
                         ff,
                         esc_drawtext(&clip.text),
@@ -776,6 +835,8 @@ fn build_graph(
                         clip.start,
                         end,
                         box_part,
+                        border_part,
+                        shadow_part,
                         next
                     ));
                     running = next;

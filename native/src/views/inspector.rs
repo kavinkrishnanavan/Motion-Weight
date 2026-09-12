@@ -1191,7 +1191,31 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
         }
         app.store.touch();
     }
-    col.gap(10.0);
+    col.gap(12.0);
+
+    widgets::group_label(ctx, col.row(22.0), "STYLE");
+    col.gap(8.0);
+    let per_row = 3;
+    let rows = (TEXT_PRESETS.len() as f32 / per_row as f32).ceil() as usize;
+    for row in 0..rows {
+        let cols = col.cols(FIELD_H, per_row);
+        for (i, slot) in cols.iter().enumerate() {
+            let idx = row * per_row + i;
+            let Some((preset, label)) = TEXT_PRESETS.get(idx) else { continue };
+            let active = clip.text_preset == *preset;
+            let style = if active { ButtonStyle::Primary } else { ButtonStyle::Normal };
+            if widgets::button(ctx, id_of("txt-preset", idx as u64), *slot, label, style) {
+                app.store.snapshot_forced();
+                app.store.snapshot();
+                if let Some(c) = app.store.clip_mut(id) {
+                    preset.apply(c);
+                }
+                app.store.touch();
+            }
+        }
+        col.gap(6.0);
+    }
+    col.gap(6.0);
 
     widgets::field_label(ctx, col.row(18.0), "Font");
     let fonts: Vec<String> = FONT_FAMILIES.iter().map(|f| f.to_string()).collect();
@@ -1200,16 +1224,30 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
         app.store.snapshot();
         if let Some(c) = app.store.clip_mut(id) {
             c.font_family = FONT_FAMILIES[i].to_string();
+            c.text_preset = TextPreset::Custom;
         }
         app.store.touch();
     }
     col.gap(10.0);
 
-    widgets::field_label(ctx, col.row(18.0), "Size");
-    if let Some(v) = widgets::number_field(ctx, id_of("txt-size", 0), col.row(FIELD_H), clip.font_size, 0) {
+    let size_spacing = col.cols(FIELD_H + 18.0, 2);
+    let (size_head, size_field) = size_spacing[0].split_top(18.0);
+    widgets::field_label(ctx, size_head, "Size");
+    if let Some(v) = widgets::number_field(ctx, id_of("txt-size", 0), size_field, clip.font_size, 0) {
         app.store.snapshot();
         if let Some(c) = app.store.clip_mut(id) {
             c.font_size = v.clamp(8.0, 400.0);
+            c.text_preset = TextPreset::Custom;
+        }
+        app.store.touch();
+    }
+    let (spacing_head, spacing_field) = size_spacing[1].split_top(18.0);
+    widgets::field_label(ctx, spacing_head, "Letter spacing");
+    if let Some(v) = widgets::number_field(ctx, id_of("txt-spacing", 0), spacing_field, clip.letter_spacing, 0) {
+        app.store.snapshot();
+        if let Some(c) = app.store.clip_mut(id) {
+            c.letter_spacing = v.clamp(-20.0, 100.0);
+            c.text_preset = TextPreset::Custom;
         }
         app.store.touch();
     }
@@ -1219,16 +1257,18 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
         app.store.snapshot();
         if let Some(c) = app.store.clip_mut(id) {
             c.color = v;
+            c.text_preset = TextPreset::Custom;
         }
         app.store.touch();
     }
 
-    let toggles = col.cols(FIELD_H, 3);
+    let toggles = col.cols(FIELD_H, 4);
     if widgets::tab(ctx, id_of("txt-bold", 0), toggles[0], "B", clip.bold) {
         app.store.snapshot_forced();
         app.store.snapshot();
         if let Some(c) = app.store.clip_mut(id) {
             c.bold = !c.bold;
+            c.text_preset = TextPreset::Custom;
         }
         app.store.touch();
     }
@@ -1237,6 +1277,16 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
         app.store.snapshot();
         if let Some(c) = app.store.clip_mut(id) {
             c.italic = !c.italic;
+            c.text_preset = TextPreset::Custom;
+        }
+        app.store.touch();
+    }
+    if widgets::tab(ctx, id_of("txt-upper", 0), toggles[2], "AA", clip.uppercase) {
+        app.store.snapshot_forced();
+        app.store.snapshot();
+        if let Some(c) = app.store.clip_mut(id) {
+            c.uppercase = !c.uppercase;
+            c.text_preset = TextPreset::Custom;
         }
         app.store.touch();
     }
@@ -1247,7 +1297,7 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
         TextAlign::Center => 1,
         TextAlign::Right => 2,
     };
-    if let Some(i) = widgets::dropdown(ctx, id_of("txt-align", 0), toggles[2], &items, sel) {
+    if let Some(i) = widgets::dropdown(ctx, id_of("txt-align", 0), toggles[3], &items, sel) {
         app.store.snapshot();
         if let Some(c) = app.store.clip_mut(id) {
             c.align = [TextAlign::Left, TextAlign::Center, TextAlign::Right][i];
@@ -1274,6 +1324,83 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
             app.store.touch();
         }
     }
+    col.gap(6.0);
+
+    widgets::group_label(ctx, col.row(22.0), "EFFECTS");
+    col.gap(8.0);
+    if let Some(v) = widgets::checkbox(ctx, id_of("txt-outline", 0), col.row(22.0), "Outline", clip.outline_enabled) {
+        app.store.snapshot_forced();
+        app.store.snapshot();
+        if let Some(c) = app.store.clip_mut(id) {
+            c.outline_enabled = v;
+            c.text_preset = TextPreset::Custom;
+        }
+        app.store.touch();
+    }
+    col.gap(6.0);
+    if clip.outline_enabled {
+        if let Some(v) = color_field(ctx, &mut col, "txt-outlinecolor", "Outline colour", &clip.outline_color) {
+            app.store.snapshot();
+            if let Some(c) = app.store.clip_mut(id) {
+                c.outline_color = v;
+                c.text_preset = TextPreset::Custom;
+            }
+            app.store.touch();
+        }
+        widgets::field_label(ctx, col.row(18.0), "Outline width");
+        if let Some(v) = widgets::number_field(ctx, id_of("txt-outlinewidth", 0), col.row(FIELD_H), clip.outline_width, 1) {
+            app.store.snapshot();
+            if let Some(c) = app.store.clip_mut(id) {
+                c.outline_width = v.clamp(0.0, 20.0);
+                c.text_preset = TextPreset::Custom;
+            }
+            app.store.touch();
+        }
+        col.gap(10.0);
+    }
+
+    if let Some(v) = widgets::checkbox(ctx, id_of("txt-glow", 0), col.row(22.0), "Glow", clip.glow_enabled) {
+        app.store.snapshot_forced();
+        app.store.snapshot();
+        if let Some(c) = app.store.clip_mut(id) {
+            c.glow_enabled = v;
+            c.text_preset = TextPreset::Custom;
+        }
+        app.store.touch();
+    }
+    col.gap(6.0);
+    if clip.glow_enabled {
+        if let Some(v) = color_field(ctx, &mut col, "txt-glowcolor", "Glow colour", &clip.glow_color) {
+            app.store.snapshot();
+            if let Some(c) = app.store.clip_mut(id) {
+                c.glow_color = v;
+                c.text_preset = TextPreset::Custom;
+            }
+            app.store.touch();
+        }
+    }
+
+    if let Some(v) = widgets::checkbox(ctx, id_of("txt-shadow", 0), col.row(22.0), "Shadow", clip.shadow_enabled) {
+        app.store.snapshot_forced();
+        app.store.snapshot();
+        if let Some(c) = app.store.clip_mut(id) {
+            c.shadow_enabled = v;
+            c.text_preset = TextPreset::Custom;
+        }
+        app.store.touch();
+    }
+    col.gap(6.0);
+    if clip.shadow_enabled {
+        if let Some(v) = color_field(ctx, &mut col, "txt-shadowcolor", "Shadow colour", &clip.shadow_color) {
+            app.store.snapshot();
+            if let Some(c) = app.store.clip_mut(id) {
+                c.shadow_color = v;
+                c.text_preset = TextPreset::Custom;
+            }
+            app.store.touch();
+        }
+    }
+    col.gap(6.0);
 
     widgets::field_label(ctx, col.row(18.0), "Opacity");
     if let Some(v) = widgets::slider(ctx, id_of("txt-op", 0), col.row(FIELD_H), clip.opacity, 0.0, 1.0) {

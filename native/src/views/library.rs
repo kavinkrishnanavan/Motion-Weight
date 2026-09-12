@@ -132,16 +132,7 @@ fn draw_grid(app: &mut App, ctx: &mut Ctx, grid: Rect, ids: &[Id]) {
 }
 
 fn draw_text_tab(app: &mut App, ctx: &mut Ctx, r: Rect) {
-    let (title, body) = r.split_top(40.0);
-    ctx.painter.label(
-        Rect::new(title.x, title.y + 14.0, title.w, 22.0),
-        "Text",
-        FS_SMALL,
-        Weight::Bold,
-        TEXT_3,
-        Align::Left,
-    );
-    let tile = Rect::new(body.x, body.y + 4.0, TILE_W, TILE_H);
+    let tile = Rect::new(r.x, r.y + 4.0, TILE_W, TILE_H);
     let id = id_of("lib-text", 0);
     let (hovered, _) = ctx.interact(id, tile);
     if hovered {

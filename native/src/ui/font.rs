@@ -57,6 +57,11 @@ pub struct Fonts {
     cache: HashMap<(u8, char, u32), Glyph>,
     /// Advance-width cache for whole strings, which dominates layout cost.
     widths: HashMap<(u8, u32, u64), f32>,
+    /// A text clip's chosen font family, loaded on first use and appended to
+    /// `faces` rather than living in its own fixed slots — every other
+    /// method here already keys its cache off a plain `u8` face index, so a
+    /// family's four weight variants just become four more of those.
+    family_slots: HashMap<String, [u8; 4]>,
 }
 
 /// Leaks the mapping on purpose: it is file-backed, so it costs no private
@@ -93,6 +98,34 @@ fn load_face(candidates: &[&str]) -> Option<Face> {
     None
 }
 
+/// Candidate filenames for a text clip's chosen family, one list per weight
+/// slot (Regular/Bold/Italic/BoldItalic) in `C:/Windows/Fonts` — the same
+/// directory and lookup style `Fonts::load` already uses for the app's own
+/// UI face, and the same set `ffmpeg::font_file` maps for export. A family
+/// missing from this table, or a file missing on this machine, just falls
+/// back gracefully (see `Fonts::family_index`) rather than failing to draw.
+fn family_files(family: &str) -> [&'static [&'static str]; 4] {
+    match family {
+        "Segoe UI" => [&["segoeui.ttf"], &["segoeuib.ttf"], &["segoeuii.ttf"], &["segoeuiz.ttf"]],
+        "Georgia" => [&["georgia.ttf"], &["georgiab.ttf"], &["georgiai.ttf"], &["georgiaz.ttf"]],
+        "Times New Roman" => [&["times.ttf"], &["timesbd.ttf"], &["timesi.ttf"], &["timesbi.ttf"]],
+        "Cambria" => [&["cambria.ttf"], &["cambriab.ttf"], &["cambriai.ttf"], &["cambriaz.ttf"]],
+        "Impact" => [&["impact.ttf"], &["impact.ttf"], &["impact.ttf"], &["impact.ttf"]],
+        "Courier New" => [&["cour.ttf"], &["courbd.ttf"], &["couri.ttf"], &["courbi.ttf"]],
+        "Consolas" => [&["consola.ttf"], &["consolab.ttf"], &["consolai.ttf"], &["consolaz.ttf"]],
+        "Comic Sans MS" => [&["comic.ttf"], &["comicbd.ttf"], &["comic.ttf"], &["comicbd.ttf"]],
+        "Segoe Script" => [&["segoesc.ttf"], &["segoescb.ttf"], &["segoesc.ttf"], &["segoescb.ttf"]],
+        "Segoe Print" => [&["segoepr.ttf"], &["segoeprb.ttf"], &["segoepr.ttf"], &["segoeprb.ttf"]],
+        "Calibri" => [&["calibri.ttf"], &["calibrib.ttf"], &["calibrii.ttf"], &["calibriz.ttf"]],
+        "Trebuchet MS" => [&["trebuc.ttf"], &["trebucbd.ttf"], &["trebucit.ttf"], &["trebucbi.ttf"]],
+        "Verdana" => [&["verdana.ttf"], &["verdanab.ttf"], &["verdanai.ttf"], &["verdanaz.ttf"]],
+        "Bahnschrift" => [&["bahnschrift.ttf"], &["bahnschrift.ttf"], &["bahnschrift.ttf"], &["bahnschrift.ttf"]],
+        // "Arial" and anything unrecognized: the same files `Fonts::load`
+        // already uses for the app's own default face.
+        _ => [&["arial.ttf"], &["arialbd.ttf"], &["ariali.ttf"], &["arialbi.ttf"]],
+    }
+}
+
 impl Fonts {
     pub fn load() -> Fonts {
         // Four faces, in Weight order. Mapping them costs nothing measurable now
@@ -119,7 +152,7 @@ impl Fonts {
         // ab_glyph renders it as monochrome silhouettes — not colourful, but
         // legible, which is what matters for a caption being typed.
         let fallback = load_face(&["seguiemj.ttf", "seguisym.ttf", "seguisym.ttf"]);
-        Fonts { faces, fallback, cache: HashMap::new(), widths: HashMap::new() }
+        Fonts { faces, fallback, cache: HashMap::new(), widths: HashMap::new(), family_slots: HashMap::new() }
     }
 
     fn face_index(&self, weight: Weight) -> u8 {
@@ -138,10 +171,9 @@ impl Fonts {
         }
     }
 
-    /// Which face actually owns this character: the requested weight, or the
-    /// emoji/symbol fallback when the weight has nothing to draw.
-    fn resolve(&self, ch: char, weight: Weight) -> u8 {
-        let idx = self.face_index(weight);
+    /// Which face actually owns this character: the requested base face, or
+    /// the emoji/symbol fallback when it has nothing to draw.
+    fn resolve_idx(&self, ch: char, idx: u8) -> u8 {
         if self.faces[idx as usize].font.glyph_id(ch).0 != 0 {
             return idx;
         }
@@ -151,8 +183,44 @@ impl Fonts {
         }
     }
 
+    /// Resolves (and lazily loads) a text clip's chosen font family for one
+    /// weight, falling back to the app's own default face for any weight
+    /// slot the family doesn't have a file for on this machine — a missing
+    /// bold variant, say, just draws that weight in the family's regular
+    /// face instead of failing the whole style.
+    pub fn family_index(&mut self, family: &str, weight: Weight) -> u8 {
+        if family.is_empty() {
+            return self.face_index(weight);
+        }
+        if let Some(slots) = self.family_slots.get(family) {
+            return slots[weight as usize];
+        }
+        let mut slots = [self.face_index(Weight::Regular); 4];
+        for (i, candidates) in family_files(family).iter().enumerate() {
+            if let Some(face) = load_face(candidates) {
+                self.faces.push(face);
+                slots[i] = (self.faces.len() - 1) as u8;
+            } else if i > 0 {
+                // No dedicated file for this weight in the family — reuse
+                // whichever of its own faces already loaded, so an italic
+                // clip in a family with no italic file still reads as that
+                // family's regular weight instead of silently reverting to
+                // the whole app's own default font.
+                slots[i] = slots[0];
+            }
+        }
+        self.family_slots.insert(family.to_string(), slots);
+        slots[weight as usize]
+    }
+
     pub fn glyph(&mut self, ch: char, size: f32, weight: Weight) -> &Glyph {
-        let idx = self.resolve(ch, weight);
+        self.glyph_at(self.face_index(weight), ch, size)
+    }
+
+    /// Same as `glyph`, but against an already-resolved face index (a plain
+    /// weight slot, or one from `family_index`) rather than a `Weight`.
+    pub fn glyph_at(&mut self, idx: u8, ch: char, size: f32) -> &Glyph {
+        let idx = self.resolve_idx(ch, idx);
         // Rounded to the nearest quarter pixel: an on-canvas resize handle or a
         // size field being dragged reports a new float on essentially every
         // mouse-move, which otherwise means every glyph in the string gets
@@ -171,7 +239,10 @@ impl Fonts {
     }
 
     pub fn width(&mut self, text: &str, size: f32, weight: Weight) -> f32 {
-        let idx = self.face_index(weight);
+        self.width_at(self.face_index(weight), text, size)
+    }
+
+    pub fn width_at(&mut self, idx: u8, text: &str, size: f32) -> f32 {
         let size = (size * 4.0).round() / 4.0;
         let key = (idx, size.to_bits(), hash_str(text));
         if let Some(w) = self.widths.get(&key) {
@@ -179,7 +250,7 @@ impl Fonts {
         }
         let mut total = 0.0;
         for ch in text.chars() {
-            total += self.glyph(ch, size, weight).advance;
+            total += self.glyph_at(idx, ch, size).advance;
         }
         if self.widths.len() > 4096 {
             self.widths.clear();
@@ -190,13 +261,19 @@ impl Fonts {
 
     /// Distance from the top of a line box down to the baseline.
     pub fn ascent(&self, size: f32, weight: Weight) -> f32 {
-        let idx = self.face_index(weight) as usize;
-        self.faces[idx].font.as_scaled(PxScale::from(size)).ascent()
+        self.ascent_at(self.face_index(weight), size)
+    }
+
+    pub fn ascent_at(&self, idx: u8, size: f32) -> f32 {
+        self.faces[idx as usize].font.as_scaled(PxScale::from(size)).ascent()
     }
 
     pub fn line_height(&self, size: f32, weight: Weight) -> f32 {
-        let idx = self.face_index(weight) as usize;
-        let f = self.faces[idx].font.as_scaled(PxScale::from(size));
+        self.line_height_at(self.face_index(weight), size)
+    }
+
+    pub fn line_height_at(&self, idx: u8, size: f32) -> f32 {
+        let f = self.faces[idx as usize].font.as_scaled(PxScale::from(size));
         f.ascent() - f.descent() + f.line_gap()
     }
 

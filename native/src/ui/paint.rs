@@ -471,6 +471,94 @@ impl Painter {
         (pen - x) / scale
     }
 
+    // -------------------------------------------------------- styled text
+    //
+    // A text *clip*'s own font family and letter spacing, as opposed to the
+    // app's own UI chrome (which never varies either and always goes
+    // through the plain `text`/`label`/etc above). Kept as a separate,
+    // parallel set of methods rather than adding parameters to those —
+    // dozens of call sites across the whole app draw plain UI text, and
+    // none of them need a family or spacing.
+
+    pub fn text_width_styled(&mut self, text: &str, size: f32, weight: Weight, family: &str, letter_spacing: f32) -> f32 {
+        let idx = self.fonts.family_index(family, weight);
+        let s = self.scale;
+        // `text_styled` below adds `letter_spacing` after every character,
+        // trailing one included, so this has to match exactly or centered
+        // and right-aligned text would sit slightly off from what actually
+        // gets drawn.
+        let base = self.fonts.width_at(idx, text, size * s);
+        let extra = letter_spacing * s * text.chars().count() as f32;
+        (base + extra) / s
+    }
+
+    pub fn ascent_styled(&mut self, size: f32, weight: Weight, family: &str) -> f32 {
+        let idx = self.fonts.family_index(family, weight);
+        self.fonts.ascent_at(idx, size * self.scale) / self.scale
+    }
+
+    pub fn line_height_styled(&mut self, size: f32, weight: Weight, family: &str) -> f32 {
+        let idx = self.fonts.family_index(family, weight);
+        self.fonts.line_height_at(idx, size * self.scale) / self.scale
+    }
+
+    /// Same as `text`, but through a text clip's own chosen family and with
+    /// extra space added after each character's normal advance.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_styled(
+        &mut self,
+        x: f32,
+        y: f32,
+        text: &str,
+        size: f32,
+        weight: Weight,
+        family: &str,
+        letter_spacing: f32,
+        color: Color,
+    ) -> f32 {
+        let idx = self.fonts.family_index(family, weight);
+        let Painter { pixmap, fonts, clip, scale, .. } = self;
+        let scale = *scale;
+        let clip = dev(*clip, scale);
+        let size = size * scale;
+        let spacing = letter_spacing * scale;
+        let (x, y) = (x * scale, y * scale);
+        let mut pen = x;
+        let (cw, ch) = (pixmap.width() as i32, pixmap.height() as i32);
+        for c in text.chars() {
+            if c == ' ' {
+                pen += fonts.glyph_at(idx, ' ', size).advance + spacing;
+                continue;
+            }
+            let g = fonts.glyph_at(idx, c, size);
+            let gx = (pen + g.xmin).round() as i32;
+            let gy = (y + g.ytop).round() as i32;
+            let (gw, gh, advance) = (g.width as i32, g.height as i32, g.advance);
+            let coverage = &g.coverage;
+            let data = pixmap.pixels_mut();
+            for row in 0..gh {
+                let py = gy + row;
+                if py < 0 || py >= ch || (py as f32) < clip.y || (py as f32) >= clip.bottom() {
+                    continue;
+                }
+                for col in 0..gw {
+                    let px = gx + col;
+                    if px < 0 || px >= cw || (px as f32) < clip.x || (px as f32) >= clip.right() {
+                        continue;
+                    }
+                    let a = coverage[(row * gw + col) as usize];
+                    if a == 0 {
+                        continue;
+                    }
+                    let alpha = a as u32 * color[3] as u32 / 255;
+                    blend_pixel(&mut data[(py * cw + px) as usize], color, alpha as u8);
+                }
+            }
+            pen += advance + spacing;
+        }
+        (pen - x) / scale
+    }
+
     /// Draws text inside `r`, vertically centred and horizontally aligned,
     /// truncating with an ellipsis when it does not fit.
     pub fn label(&mut self, r: Rect, text: &str, size: f32, weight: Weight, color: Color, align: Align) -> f32 {

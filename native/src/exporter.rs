@@ -48,7 +48,11 @@ fn to_export(store: &Store, clip: &Clip, pw: u32, ph: u32) -> ExportClip {
     ExportClip {
         kind: clip.kind,
         path: asset.map(|a| a.path.clone()),
-        text: clip.text.clone(),
+        text: if clip.kind == ClipKind::Text && clip.uppercase {
+            clip.text.to_uppercase()
+        } else {
+            clip.text.clone()
+        },
         start: clip.start,
         duration: clip.duration,
         trim_in: if clip.kind == ClipKind::Text { 0.0 } else { clip.trim_in },
@@ -65,6 +69,17 @@ fn to_export(store: &Store, clip: &Clip, pw: u32, ph: u32) -> ExportClip {
         bold: clip.bold,
         italic: clip.italic,
         bg_color: (clip.kind == ClipKind::Text && clip.bg_enabled).then(|| clip.bg_color.clone()),
+        border: if clip.kind != ClipKind::Text {
+            None
+        } else if clip.outline_enabled {
+            Some((clip.outline_color.clone(), clip.outline_width))
+        } else if clip.glow_enabled {
+            Some((clip.glow_color.clone(), 3.0))
+        } else {
+            None
+        },
+        shadow: (clip.kind == ClipKind::Text && clip.shadow_enabled)
+            .then(|| (clip.shadow_color.clone(), (clip.font_size * 0.06).max(2.0))),
         crop: clip.crop,
         color_grade: (clip.kind != ClipKind::Text).then(|| clip.color_grade.clone()).filter(|g| g.is_active()),
         mask: mask_file(clip, pw, ph),
