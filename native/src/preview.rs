@@ -113,6 +113,16 @@ struct CachedMask {
     touched: std::time::Instant,
 }
 
+/// Same idea as `CachedMask`, for `color::apply`'s output. `frame_key` is the
+/// requested local time's bit pattern — while paused it's constant frame to
+/// frame, so it doubles as "is this still the same source frame" without
+/// needing the decoder's own borrow alive to check its actual timestamp.
+struct GradedCache {
+    frame_key: u32,
+    grade: ColorGrade,
+    buf: Vec<u8>,
+}
+
 pub struct Preview {
     decoders: HashMap<Id, ClipDecoder>,
     stills: HashMap<Id, Still>,
@@ -120,6 +130,16 @@ pub struct Preview {
     /// Parsed `.cube` files, keyed by path. `None` marks a path that failed
     /// to load, so a broken reference doesn't retry a disk read every frame.
     luts: HashMap<String, Option<Rc<Lut3D>>>,
+    /// Last color-graded pixel buffer per clip, so a redraw triggered by
+    /// something unrelated (any other widget in the app — this is a single
+    /// immediate-mode window, so every redraw repaints the whole player)
+    /// doesn't redo the per-pixel grading pass over a frame that hasn't
+    /// actually changed. `color::apply` walks every pixel with several
+    /// float ops each; on a paused, ungraded-nothing-changed frame that
+    /// cost is pure waste, and it was what made unrelated UI edits (a text
+    /// color swatch, the snap toggle) stall the player for double-digit
+    /// milliseconds even though the video itself was idle.
+    graded_cache: HashMap<Id, GradedCache>,
     drag: Option<Drag>,
     /// Playback clock, rebased whenever the playhead moves from outside.
     wall_start: std::time::Instant,
@@ -137,6 +157,7 @@ impl Preview {
             stills: HashMap::new(),
             mask_cache: HashMap::new(),
             luts: HashMap::new(),
+            graded_cache: HashMap::new(),
             drag: None,
             wall_start: std::time::Instant::now(),
             playhead_start: 0.0,
@@ -272,6 +293,13 @@ impl Preview {
                 None => break,
             }
         }
+        // Not on the same idle timer as the caches above — a clip whose
+        // decoder or still gets evicted while still on screen (e.g. the
+        // `MAX_DECODERS` cap under many tracks) would otherwise leave an
+        // orphaned graded entry behind that nothing ever reads again.
+        let live: std::collections::HashSet<Id> =
+            self.decoders.keys().chain(self.stills.keys()).copied().collect();
+        self.graded_cache.retain(|id, _| live.contains(id));
     }
 
     /// Loads and caches the LUT at `path` (a no-op, returning the cached
@@ -449,10 +477,19 @@ impl Preview {
         );
         let opts_alpha = clip.opacity * st.alpha;
 
-        // Looked up before the frame borrow below starts, so `lut_for`'s
-        // `&mut self` never has to coexist with it.
+        // Looked up before the frame borrow below starts, so `lut_for`'s and
+        // the graded-cache check's `&mut self` never has to coexist with it.
+        // An image's content never changes with time, so it gets a fixed
+        // key instead of one that trails the playhead — otherwise every
+        // scrub would look like a new frame and miss the cache for no reason.
         let active_grade = clip.color_grade.is_active();
         let lut = active_grade.then(|| self.lut_for(&clip.color_grade.lut_path)).flatten();
+        let frame_key = if clip.kind == ClipKind::Image { 0 } else { local.to_bits() };
+        let cached = active_grade
+            .then(|| self.graded_cache.get(&clip.id))
+            .flatten()
+            .filter(|c| c.frame_key == frame_key && c.grade == clip.color_grade)
+            .map(|c| c.buf.clone());
 
         let frame = if clip.kind == ClipKind::Image {
             self.still_frame(clip.asset_id, &path, size)
@@ -462,11 +499,18 @@ impl Preview {
         let Some(frame) = frame else { return };
         let (fw, fh) = (frame.width, frame.height);
 
-        let graded = active_grade.then(|| {
-            let mut buf = frame.rgba.clone();
-            color::apply(&mut buf, &clip.color_grade, lut.as_deref());
-            buf
-        });
+        // `fresh` marks a buffer this call actually computed, as opposed to
+        // one pulled from `cached` — no sense writing the cache entry right
+        // back to the value it already held.
+        let (graded, fresh) = match cached {
+            Some(buf) => (Some(buf), false),
+            None if active_grade => {
+                let mut buf = frame.rgba.clone();
+                color::apply(&mut buf, &clip.color_grade, lut.as_deref());
+                (Some(buf), true)
+            }
+            None => (None, false),
+        };
         let rgba: &[u8] = match &graded {
             Some(buf) => buf,
             None => &frame.rgba,
@@ -474,6 +518,13 @@ impl Preview {
 
         let user_mask = mask_plane.as_ref().map(|m| (&m.data[..], (m.width, m.height)));
         render_transitioned(ctx, rgba, fw, fh, dst, src, opts_alpha, &st, clip.id, user_mask);
+
+        if fresh {
+            if let Some(buf) = graded {
+                self.graded_cache
+                    .insert(clip.id, GradedCache { frame_key, grade: clip.color_grade.clone(), buf });
+            }
+        }
     }
 
     // ----------------------------------------------------------- interaction
