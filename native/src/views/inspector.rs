@@ -1193,30 +1193,6 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
     }
     col.gap(12.0);
 
-    widgets::group_label(ctx, col.row(22.0), "STYLE");
-    col.gap(8.0);
-    let per_row = 3;
-    let rows = (TEXT_PRESETS.len() as f32 / per_row as f32).ceil() as usize;
-    for row in 0..rows {
-        let cols = col.cols(FIELD_H, per_row);
-        for (i, slot) in cols.iter().enumerate() {
-            let idx = row * per_row + i;
-            let Some((preset, label)) = TEXT_PRESETS.get(idx) else { continue };
-            let active = clip.text_preset == *preset;
-            let style = if active { ButtonStyle::Primary } else { ButtonStyle::Normal };
-            if widgets::button(ctx, id_of("txt-preset", idx as u64), *slot, label, style) {
-                app.store.snapshot_forced();
-                app.store.snapshot();
-                if let Some(c) = app.store.clip_mut(id) {
-                    preset.apply(c);
-                }
-                app.store.touch();
-            }
-        }
-        col.gap(6.0);
-    }
-    col.gap(6.0);
-
     widgets::field_label(ctx, col.row(18.0), "Font");
     let fonts: Vec<String> = FONT_FAMILIES.iter().map(|f| f.to_string()).collect();
     let selected = FONT_FAMILIES.iter().position(|f| *f == clip.font_family).unwrap_or(0);

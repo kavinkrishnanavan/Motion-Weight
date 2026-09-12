@@ -221,6 +221,7 @@ pub struct App {
 
     pub library_tab: LibraryTab,
     pub library_scroll: f32,
+    pub text_scroll: f32,
     pub stock_tab: StockTab,
     pub stock_scroll: f32,
     pub stock_query: String,
@@ -302,6 +303,7 @@ impl App {
             project_thumb_pending: std::collections::HashSet::new(),
             library_tab: LibraryTab::Media,
             library_scroll: 0.0,
+            text_scroll: 0.0,
             stock_tab: StockTab::Photo,
             stock_scroll: 0.0,
             stock_query: "nature".into(),
@@ -716,9 +718,9 @@ impl App {
         self.store.add_clip(track_id, clip);
     }
 
-    pub fn add_text_clip(&mut self, track_id: Option<Id>, start: Option<f32>) {
+    pub fn add_text_clip(&mut self, track_id: Option<Id>, start: Option<f32>, preset: TextPreset) {
         let track_id = self.store.track_for(ClipKind::Text, track_id);
-        let clip = Clip::new_text(start.unwrap_or(self.store.playhead));
+        let clip = Clip::new_text(start.unwrap_or(self.store.playhead), preset);
         self.store.add_clip(track_id, clip);
     }
 

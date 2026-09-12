@@ -649,10 +649,11 @@ impl Clip {
         }
     }
 
-    pub fn new_text(start: f32) -> Clip {
+    pub fn new_text(start: f32, preset: TextPreset) -> Clip {
         let mut c = Clip::new_media(ClipKind::Text, 0, start, 3.0, 0.0, 0.0);
         c.text = "Text".into();
         c.bold = true;
+        preset.apply(&mut c);
         c
     }
 

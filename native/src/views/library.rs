@@ -131,29 +131,53 @@ fn draw_grid(app: &mut App, ctx: &mut Ctx, grid: Rect, ids: &[Id]) {
     ctx.painter.set_clip(prev);
 }
 
+/// One tile per `TextPreset`, dragged onto the timeline (or double-clicked)
+/// to create a text clip already styled with that look — the same catalog
+/// the inspector's STYLE grid offers for restyling a clip already placed.
 fn draw_text_tab(app: &mut App, ctx: &mut Ctx, r: Rect) {
-    let tile = Rect::new(r.x, r.y + 4.0, TILE_W, TILE_H);
-    let id = id_of("lib-text", 0);
-    let (hovered, _) = ctx.interact(id, tile);
-    if hovered {
-        ctx.cursor = Cursor::Hand;
-        ctx.tooltip = Some((tile, "Drag to the timeline · double-click to add".into()));
-    }
-    let (preview, label) = tile.split_top(TILE_H - 20.0);
-    ctx.painter.round_rect(preview, R_SM, BG_ELEV);
-    ctx.painter
-        .stroke_round_rect(preview, R_SM, if hovered { ACCENT } else { BORDER }, 1.0);
-    ctx.painter
-        .label(preview, "Text", 20.0, Weight::Bold, TEXT, Align::Center);
-    ctx.painter
-        .label(label, "Default text", FS_SMALL, Weight::Regular, TEXT_2, Align::Left);
+    let presets = crate::model::TEXT_PRESETS;
+    let per_row = ((r.w + GAP) / (TILE_W + GAP)).floor().max(1.0) as usize;
+    let rows = (presets.len() as f32 / per_row as f32).ceil();
+    let content_h = rows * (TILE_H + GAP);
+    widgets::scroll(ctx, id_of("lib-text-scroll", 0), r, content_h, &mut app.text_scroll);
+    let prev = ctx.painter.push_clip(r);
 
-    if ctx.is_active(id) && dragging_far(ctx) {
-        ctx.drag_payload = Some(DragPayload::Text);
+    for (i, (preset, label)) in presets.iter().enumerate() {
+        let col = i % per_row;
+        let row = i / per_row;
+        let tile = Rect::new(
+            r.x + col as f32 * (TILE_W + GAP),
+            r.y + row as f32 * (TILE_H + GAP) - app.text_scroll,
+            TILE_W,
+            TILE_H,
+        );
+        if tile.bottom() < r.y || tile.y > r.bottom() {
+            continue;
+        }
+        let id = id_of("lib-text-item", i as u64);
+        let (hovered, _) = ctx.interact(id, tile);
+        if hovered {
+            ctx.cursor = Cursor::Hand;
+            ctx.tooltip = Some((tile, "Drag to the timeline · double-click to add".into()));
+        }
+
+        let (preview, name_rect) = tile.split_top(TILE_H - 20.0);
+        ctx.painter.round_rect(preview, R_SM, BG_ELEV);
+        ctx.painter
+            .stroke_round_rect(preview, R_SM, if hovered { ACCENT } else { BORDER }, 1.0);
+        let sample = if *preset == crate::model::TextPreset::Custom { "Default" } else { "Aa" };
+        ctx.painter.label(preview, sample, 20.0, Weight::Bold, TEXT, Align::Center);
+        ctx.painter
+            .label(name_rect, label, FS_SMALL, Weight::Regular, TEXT_2, Align::Left);
+
+        if ctx.is_active(id) && dragging_far(ctx) {
+            ctx.drag_payload = Some(DragPayload::Text(*preset));
+        }
+        if hovered && ctx.double_click {
+            app.add_text_clip(None, None, *preset);
+        }
     }
-    if hovered && ctx.double_click {
-        app.add_text_clip(None, None);
-    }
+    ctx.painter.set_clip(prev);
 }
 
 fn draw_stock(app: &mut App, ctx: &mut Ctx, r: Rect) {
@@ -351,7 +375,11 @@ fn draw_drag_ghost(app: &App, ctx: &mut Ctx) {
             .asset(*id)
             .map(|a| a.name.clone())
             .unwrap_or_else(|| "Clip".into()),
-        DragPayload::Text => "Text".into(),
+        DragPayload::Text(preset) => crate::model::TEXT_PRESETS
+            .iter()
+            .find(|(p, _)| p == preset)
+            .map(|(_, name)| name.to_string())
+            .unwrap_or_else(|| "Text".into()),
         DragPayload::StockPhoto(_) => "Photo".into(),
         DragPayload::StockVideo(_) => "Video".into(),
     };

@@ -739,7 +739,7 @@ fn handle_library_drop(app: &mut App, ctx: &mut Ctx, area: Rect, lanes: &[Rect])
     // whole gesture feel unreliable.
     let over = ctx.hovered(Rect::new(area.x - GUTTER_W, area.y, area.w + GUTTER_W, area.h));
     let (kind, duration) = match &payload {
-        DragPayload::Text => (ClipKind::Text, 3.0),
+        DragPayload::Text(_) => (ClipKind::Text, 3.0),
         DragPayload::StockPhoto(_) => (ClipKind::Image, 3.0),
         DragPayload::StockVideo(i) => (ClipKind::Video, app.stock_videos.get(*i).map(|v| v.duration).unwrap_or(3.0)),
         DragPayload::Asset(id) => match app.store.asset(*id) {
@@ -797,7 +797,7 @@ fn handle_library_drop(app: &mut App, ctx: &mut Ctx, area: Rect, lanes: &[Rect])
     };
 
     match payload {
-        DragPayload::Text => app.add_text_clip(Some(track_id), Some(start)),
+        DragPayload::Text(preset) => app.add_text_clip(Some(track_id), Some(start), preset),
         DragPayload::Asset(asset_id) => {
             let Some(asset) = app.store.asset(asset_id).cloned() else { return };
             let s = app.store.project.settings;

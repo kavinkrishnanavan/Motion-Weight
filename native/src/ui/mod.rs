@@ -124,7 +124,7 @@ pub struct Ctx {
 #[derive(Clone, Debug)]
 pub enum DragPayload {
     Asset(crate::model::Id),
-    Text,
+    Text(crate::model::TextPreset),
     StockPhoto(usize),
     StockVideo(usize),
 }
