@@ -118,6 +118,12 @@ pub struct ClipDecoder {
     /// A pause-glance-resume inside that window costs nothing; only a pause
     /// that actually sticks around pays for the UI-starvation guard.
     idle_since: Option<std::time::Instant>,
+    /// One frame pulled from `rx` but not yet consumed, because it landed
+    /// further ahead of the request than we want to display yet. Holding it
+    /// here (instead of either discarding it or forcing it into `current`)
+    /// is what throttles the decoder now that ffmpeg itself runs at full
+    /// speed: see the comment on `frame_at`'s drain loop.
+    lookahead: Option<(u32, f32, Frame)>,
 }
 
 /// How long the requested time has to sit still before the decoder actually
@@ -177,6 +183,7 @@ impl ClipDecoder {
             park,
             last_touched: std::time::Instant::now(),
             idle_since: None,
+            lookahead: None,
         }
     }
 
@@ -213,9 +220,9 @@ impl ClipDecoder {
             self.seek(t);
         }
 
-        // Drain everything the worker has produced, keeping the newest frame
-        // that is not ahead of the request. `self.current` is never cleared on
-        // seek (the old frame stays on screen until a new one lands), so its
+        // Drain what the worker has produced, keeping the newest frame that is
+        // not ahead of the request. `self.current` is never cleared on seek
+        // (the old frame stays on screen until a new one lands), so its
         // timestamp can belong to a completely different stream generation —
         // comparing a fresh stream's timestamps against it is only valid once
         // that fresh stream is the one `current` was last set from. Otherwise
@@ -225,7 +232,26 @@ impl ClipDecoder {
         // apart from a genuinely-later frame within the *same* stream: the
         // preview would freeze on the pre-seek frame permanently while decode
         // silently produced and discarded correct frames behind the scenes.
-        while let Ok((gen, ts, frame)) = self.rx.try_recv() {
+        //
+        // Unlike a plain `while let Ok(..) = try_recv()`, this stops the
+        // instant it meets a frame further ahead of `t` than we want to show
+        // yet, and holds that one in `lookahead` instead of consuming it.
+        // ffmpeg runs at full decode speed now (no `-re`), so without this the
+        // decoder would race through the file discarding everything beyond
+        // the display window as fast as it could decode it. Leaving the
+        // surplus frame sitting here means it also sits in the bounded
+        // channel behind it, which backpressures the worker's `try_send` loop
+        // (decode_loop) into sleeping until playback catches up — that
+        // channel-fill is the only throttle left, and it paces the decoder to
+        // actual consumption instead of to wall-clock time. The old wall-clock
+        // pacing (`-re`) was the reason a random seek into a long clip could
+        // "stick": ffmpeg paces its own internal keyframe-to-target catch-up
+        // the same as normal playback, so landing far from a keyframe meant
+        // waiting out that whole gap in real time before the first frame
+        // arrived at all. Full-speed decode does that catch-up in a blink.
+        loop {
+            let item = self.lookahead.take().map(Ok).unwrap_or_else(|| self.rx.try_recv());
+            let Ok((gen, ts, frame)) = item else { break };
             if gen != self.stream_gen {
                 continue;
             }
@@ -233,9 +259,15 @@ impl ClipDecoder {
                 Some((cur, _)) if self.current_gen == gen => ts > *cur,
                 _ => true,
             };
-            if ahead && ts <= t + 1.0 / self.fps {
+            if !ahead {
+                continue;
+            }
+            if ts <= t + 1.0 / self.fps {
                 self.current = Some((ts, frame));
                 self.current_gen = gen;
+            } else {
+                self.lookahead = Some((gen, ts, frame));
+                break;
             }
         }
 
@@ -315,6 +347,7 @@ impl ClipDecoder {
         self.stream_gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.stream_start = t;
         self.seek_issued_at = std::time::Instant::now();
+        self.lookahead = None;
         *self.pending.lock().unwrap() = Some(t);
     }
 }
@@ -371,14 +404,18 @@ fn decode_loop(
                 // as the video simply never starting after a scrub, worse
                 // than the slowness it was meant to fix. Software decode is
                 // slower but reliable; that trade wins.
-                // Without -re, ffmpeg decodes as fast as the CPU allows (5-14x
-                // real time here) instead of pacing itself to the source's own
-                // clock. That sprints the decoder far past the playhead's
-                // accept window within milliseconds of every seek, so almost
-                // every frame gets discarded as "too far ahead" until the next
-                // catch-up reseek forces a restart — visible as the video only
-                // advancing in brief bursts once a second instead of smoothly.
-                "-re",
+                // No `-re`: ffmpeg decodes as fast as the CPU allows rather
+                // than pacing itself to the source's own clock. That used to
+                // mean it sprinted the decoder far past the playhead's accept
+                // window within milliseconds of every seek, discarding almost
+                // every frame as "too far ahead" — but `frame_at`'s drain loop
+                // now stops pulling from the channel once a frame lands ahead
+                // of the display window and holds it in `lookahead`, which
+                // backpressures this process through the channel-full sleep
+                // below instead. That keeps steady playback paced to actual
+                // consumption, while a seek's internal keyframe-to-target
+                // catch-up (which real-time pacing used to throttle right
+                // along with everything else) now runs at full speed.
                 "-ss",
                 &format!("{:.3}", start.max(0.0)),
                 "-i",
