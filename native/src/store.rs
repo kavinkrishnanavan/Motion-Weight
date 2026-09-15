@@ -11,6 +11,12 @@ pub struct Store {
     pub project_id: Option<String>,
     pub project: Project,
     pub selection: Option<Selection>,
+    /// Other clips selected alongside `selection`, for a multi-clip
+    /// selection — group-dragging on the timeline and broadcasting an
+    /// inspector edit both walk `selected_ids()` rather than just the
+    /// primary. Clip ids only: a selected clip's track can change under a
+    /// drag, so the track is always looked up fresh rather than cached here.
+    pub extra_selected: Vec<Id>,
     pub playhead: f32,
     pub playing: bool,
     pub playback_rate: f32,
@@ -42,6 +48,7 @@ impl Store {
             project_id: None,
             project: Project::default(),
             selection: None,
+            extra_selected: Vec::new(),
             playhead: 0.0,
             playing: false,
             playback_rate: 1.0,
@@ -130,14 +137,18 @@ impl Store {
     /// Swaps in a snapshot, keeping the selection when that clip still exists —
     /// otherwise an undo mid-edit would kick you out of the inspector.
     fn restore(&mut self, snapshot: Project) {
-        let was = self.selection.map(|s| s.clip_id);
+        let was_primary = self.selection.map(|s| s.clip_id);
+        let was_extra = std::mem::take(&mut self.extra_selected);
         self.project = snapshot;
         self.selection = None;
-        if let Some(clip_id) = was {
+        if let Some(clip_id) = was_primary {
             if let Some((track_id, _)) = self.locate(clip_id) {
                 self.selection = Some(Selection { track_id, clip_id });
             }
         }
+        // A clip that undo/redo made vanish drops out of the selection quietly
+        // rather than leaving a dangling id behind.
+        self.extra_selected = was_extra.into_iter().filter(|id| self.locate(*id).is_some()).collect();
         self.last_snapshot = std::time::Instant::now() - std::time::Duration::from_secs(1);
         self.touch();
     }
@@ -173,6 +184,7 @@ impl Store {
         self.reseed_ids();
         self.normalize_tracks();
         self.selection = None;
+        self.extra_selected.clear();
         self.playhead = 0.0;
         self.playing = false;
         self.undo_stack.clear();
@@ -240,8 +252,78 @@ impl Store {
         self.selection.and_then(|s| self.clip(s.clip_id))
     }
 
+    /// Replaces the whole selection with just this one clip (or clears it).
+    /// Every click on the timeline that isn't a shift/ctrl toggle goes
+    /// through here, which is what collapses a multi-selection back to one.
     pub fn select(&mut self, sel: Option<Selection>) {
         self.selection = sel;
+        self.extra_selected.clear();
+    }
+
+    /// True when `clip_id` is the primary selection or one of the other
+    /// clips selected alongside it.
+    pub fn is_selected(&self, clip_id: Id) -> bool {
+        self.selection.map(|s| s.clip_id) == Some(clip_id) || self.extra_selected.contains(&clip_id)
+    }
+
+    /// Every selected clip id, primary first, deduplicated.
+    pub fn selected_ids(&self) -> Vec<Id> {
+        let mut out = Vec::new();
+        if let Some(s) = self.selection {
+            out.push(s.clip_id);
+        }
+        for id in &self.extra_selected {
+            if !out.contains(id) {
+                out.push(*id);
+            }
+        }
+        out
+    }
+
+    /// Adds or removes one clip from the selection — a shift/ctrl-click on
+    /// the timeline. Toggling the primary off promotes the next extra clip
+    /// (if any) so the selection never goes primary-less while non-empty.
+    pub fn toggle_selected(&mut self, sel: Selection) {
+        if self.selection.map(|s| s.clip_id) == Some(sel.clip_id) {
+            self.selection = self
+                .extra_selected
+                .first()
+                .copied()
+                .and_then(|id| self.locate(id).map(|(track_id, _)| Selection { track_id, clip_id: id }));
+            if !self.extra_selected.is_empty() {
+                self.extra_selected.remove(0);
+            }
+        } else if let Some(pos) = self.extra_selected.iter().position(|id| *id == sel.clip_id) {
+            self.extra_selected.remove(pos);
+        } else if self.selection.is_none() {
+            self.selection = Some(sel);
+        } else {
+            self.extra_selected.push(sel.clip_id);
+        }
+    }
+
+    /// Replaces the whole selection with exactly this set of clips — the
+    /// marquee drag on the timeline. Ids that no longer resolve to a clip are
+    /// dropped rather than left dangling.
+    pub fn select_many(&mut self, ids: &[Id]) {
+        let valid: Vec<(Id, Id)> =
+            ids.iter().filter_map(|id| self.locate(*id).map(|(track_id, _)| (*id, track_id))).collect();
+        let mut valid = valid.into_iter();
+        self.selection = valid.next().map(|(clip_id, track_id)| Selection { track_id, clip_id });
+        self.extra_selected = valid.map(|(id, _)| id).collect();
+    }
+
+    /// Applies `f` to `primary_id` and, when it is part of a multi-clip
+    /// selection, to every other selected clip too — so dragging a slider or
+    /// typing a field in the inspector broadcasts across the whole selection
+    /// instead of only touching the one clip the panel happens to be showing.
+    pub fn edit_selected(&mut self, primary_id: Id, mut f: impl FnMut(&mut Clip)) {
+        let ids = if self.is_selected(primary_id) { self.selected_ids() } else { vec![primary_id] };
+        for id in ids {
+            if let Some(c) = self.clip_mut(id) {
+                f(c);
+            }
+        }
     }
 
     /// Clips playing at `time`, back to front. Tracks are stored top-first, so
@@ -430,7 +512,9 @@ impl Store {
             }
             t.clips.push(clip);
         }
-        self.selection = Some(Selection { track_id, clip_id: id });
+        // A freshly added clip becomes the sole selection, not one more
+        // member of whatever was selected before it landed.
+        self.select(Some(Selection { track_id, clip_id: id }));
         self.touch();
         Some(id)
     }
@@ -464,14 +548,24 @@ impl Store {
         self.touch();
     }
 
+    /// Removes a clip — or, when it's part of the current multi-clip
+    /// selection, every clip in that selection — in one undo step.
     pub fn remove_clip(&mut self, clip_id: Id) {
-        let Some((track_id, idx)) = self.locate(clip_id) else { return };
+        let ids = if self.is_selected(clip_id) { self.selected_ids() } else { vec![clip_id] };
+        if ids.iter().all(|id| self.locate(*id).is_none()) {
+            return;
+        }
         self.snapshot_forced();
-        self.track_mut(track_id).unwrap().clips.remove(idx);
-        if self.selection.map(|s| s.clip_id) == Some(clip_id) {
+        for id in &ids {
+            if let Some((track_id, idx)) = self.locate(*id) {
+                self.track_mut(track_id).unwrap().clips.remove(idx);
+                self.remove_track_if_empty(track_id);
+            }
+        }
+        self.extra_selected.retain(|id| !ids.contains(id));
+        if self.selection.map(|s| ids.contains(&s.clip_id)).unwrap_or(false) {
             self.selection = None;
         }
-        self.remove_track_if_empty(track_id);
         self.touch();
     }
 
@@ -495,7 +589,8 @@ impl Store {
         track.clips[idx].duration = offset;
         let right_id = right.id;
         track.clips.insert(idx + 1, right);
-        self.selection = Some(Selection { track_id, clip_id: right_id });
+        // The new right-hand piece becomes the sole selection.
+        self.select(Some(Selection { track_id, clip_id: right_id }));
         self.touch();
         true
     }

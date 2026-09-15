@@ -344,7 +344,12 @@ impl App {
     /// One-line state summary for the scripted test harness.
     #[cfg(feature = "harness")]
     pub fn debug_state(&self) -> String {
-        let sel = self.store.selection.map(|s| s.clip_id.to_string()).unwrap_or_else(|| "-".into());
+        let ids = self.store.selected_ids();
+        let sel = if ids.is_empty() {
+            "-".to_string()
+        } else {
+            ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join("+")
+        };
         let lanes: Vec<String> = self
             .store
             .project
@@ -732,9 +737,9 @@ impl App {
         let Some(path) = rfd::FileDialog::new().add_filter("LUT", &["cube"]).pick_file() else { return };
         let path = path.to_string_lossy().to_string();
         self.store.snapshot_forced();
-        if let Some(c) = self.store.clip_mut(clip_id) {
-            c.color_grade.lut_path = path;
-        }
+        self.store.edit_selected(clip_id, |c| {
+            c.color_grade.lut_path = path.clone();
+        });
         self.store.touch();
     }
 

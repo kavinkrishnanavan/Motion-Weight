@@ -219,13 +219,13 @@ fn media_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Si
 
     col.gap(16.0);
     let remove = col.row(FIELD_H + 4.0);
-    if widgets::button(
-        ctx,
-        id_of("side-remove", 0),
-        remove,
-        &format!("Remove {}", clip.kind.label()),
-        ButtonStyle::Danger,
-    ) {
+    let group_len = app.store.selected_ids().len();
+    let remove_label = if app.store.is_selected(id) && group_len > 1 {
+        format!("Remove {} clips", group_len)
+    } else {
+        format!("Remove {}", clip.kind.label())
+    };
+    if widgets::button(ctx, id_of("side-remove", 0), remove, &remove_label, ButtonStyle::Danger) {
         app.store.remove_clip(id);
     }
     col.used()
@@ -244,9 +244,9 @@ fn basic_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip, pw: f32, 
     widgets::field_label(ctx, col.row(18.0), "Duration (sec)");
     if let Some(v) = widgets::number_field(ctx, id_of("side-dur", 0), col.row(FIELD_H), clip.duration, 2) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.duration = v.max(0.2);
-        }
+        });
         app.store.touch();
     }
     col.gap(10.0);
@@ -255,9 +255,9 @@ fn basic_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip, pw: f32, 
         widgets::field_label(ctx, col.row(18.0), "Trim in (sec)");
         if let Some(v) = widgets::number_field(ctx, id_of("side-trim", 0), col.row(FIELD_H), clip.trim_in, 2) {
             app.store.snapshot();
-            if let Some(c) = app.store.clip_mut(id) {
+            app.store.edit_selected(id, |c| {
                 c.trim_in = v.max(0.0);
-            }
+            });
             app.store.touch();
         }
         col.gap(10.0);
@@ -279,13 +279,13 @@ fn basic_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip, pw: f32, 
         widgets::field_label(ctx, head, label);
         if let Some(v) = widgets::number_field(ctx, id_of("side-xy", i as u64), field, value, 0) {
             app.store.snapshot();
-            if let Some(c) = app.store.clip_mut(id) {
+            app.store.edit_selected(id, |c| {
                 if is_x {
                     c.x = v / pw;
                 } else {
                     c.y = v / ph;
                 }
-            }
+            });
             app.store.touch();
         }
     }
@@ -305,9 +305,9 @@ fn basic_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip, pw: f32, 
     );
     if let Some(v) = sw.map(|v| v).or(nw.map(|v| v / pw)) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.width = v.clamp(0.01, 4.0);
-        }
+        });
         app.store.touch();
     }
 
@@ -325,36 +325,41 @@ fn basic_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip, pw: f32, 
     );
     if let Some(v) = sh.map(|v| v).or(nh.map(|v| v / ph)) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.height = v.clamp(0.01, 4.0);
-        }
+        });
         app.store.touch();
     }
 
     let buttons = col.cols(FIELD_H, 2);
     if widgets::button(ctx, id_of("side-fit", 0), buttons[0], "Fit frame", ButtonStyle::Normal) {
-        let size = app
-            .store
-            .asset(clip.asset_id)
-            .map(|a| fit_clip_size(a.width, a.height, pw as u32, ph as u32))
-            .unwrap_or((1.0, 1.0));
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
-            c.width = size.0;
-            c.height = size.1;
-            c.x = 0.5;
-            c.y = 0.5;
+        // Unlike every other field here, "fit" can't just copy one number
+        // across the selection — each clip has to fit *its own* asset, so
+        // this walks the group and looks each one up individually instead of
+        // going through `edit_selected`.
+        let ids = if app.store.is_selected(id) { app.store.selected_ids() } else { vec![id] };
+        for cid in ids {
+            let Some(asset_id) = app.store.clip(cid).map(|c| c.asset_id) else { continue };
+            let Some(asset) = app.store.asset(asset_id) else { continue };
+            let size = fit_clip_size(asset.width, asset.height, pw as u32, ph as u32);
+            if let Some(c) = app.store.clip_mut(cid) {
+                c.width = size.0;
+                c.height = size.1;
+                c.x = 0.5;
+                c.y = 0.5;
+            }
         }
         app.store.touch();
     }
     if widgets::button(ctx, id_of("side-centre", 0), buttons[1], "Centre", ButtonStyle::Normal) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.x = 0.5;
             c.y = 0.5;
-        }
+        });
         app.store.touch();
     }
     col.gap(12.0);
@@ -362,9 +367,9 @@ fn basic_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip, pw: f32, 
     widgets::field_label(ctx, col.row(18.0), "Opacity");
     if let Some(v) = widgets::slider(ctx, id_of("side-op", 0), col.row(FIELD_H), clip.opacity, 0.0, 1.0) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.opacity = v;
-        }
+        });
         app.store.touch();
     }
     col.gap(12.0);
@@ -405,14 +410,14 @@ fn mask_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
             ) {
                 let f = (v / 100.0).clamp(0.0, 0.95);
                 app.store.snapshot();
-                if let Some(c) = app.store.clip_mut(id) {
+                app.store.edit_selected(id, |c| {
                     match index {
                         0 => c.crop.left = f,
                         1 => c.crop.right = f,
                         2 => c.crop.top = f,
                         _ => c.crop.bottom = f,
                     }
-                }
+                });
                 app.store.touch();
             }
         }
@@ -427,9 +432,9 @@ fn mask_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
     ) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.crop = Crop::default();
-        }
+        });
         app.store.touch();
     }
     col.gap(14.0);
@@ -442,9 +447,9 @@ fn mask_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
     if let Some(i) = widgets::dropdown(ctx, id_of("side-maskshape", 0), col.row(FIELD_H), &items, selected) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.mask.shape = MASK_SHAPES[i].0;
-        }
+        });
         app.store.touch();
     }
     col.gap(10.0);
@@ -478,9 +483,9 @@ fn mask_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
         180.0,
     ) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.mask.rotation = v;
-        }
+        });
         app.store.touch();
     }
     col.gap(10.0);
@@ -503,9 +508,9 @@ fn mask_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
         0.5,
     ) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.mask.feather = v;
-        }
+        });
         app.store.touch();
     }
     col.gap(10.0);
@@ -513,9 +518,9 @@ fn mask_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
     if let Some(v) = widgets::checkbox(ctx, id_of("side-invert", 0), col.row(22.0), "Invert mask", clip.mask.invert) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.mask.invert = v;
-        }
+        });
         app.store.touch();
     }
     col.gap(10.0);
@@ -529,9 +534,9 @@ fn mask_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
         app.store.snapshot_forced();
         let shape = clip.mask.shape;
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.mask = Mask { shape, ..Mask::default() };
-        }
+        });
         app.store.touch();
     }
 }
@@ -648,10 +653,10 @@ fn color_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
         ($key:expr, $label:expr, $field:ident) => {
             if let Some(v) = percent_slider(ctx, col, $key, $label, grade.$field) {
                 app.store.snapshot();
-                if let Some(c) = app.store.clip_mut(id) {
+                app.store.edit_selected(id, |c| {
                     c.color_grade.$field = v;
                     c.color_grade.preset = ColorPreset::Custom;
-                }
+                });
                 app.store.touch();
             }
         };
@@ -674,10 +679,10 @@ fn color_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
     );
     if let Some(v) = sv.or(nv.map(|v| (v / 2.0).clamp(-1.0, 1.0))) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.color_grade.exposure = v;
             c.color_grade.preset = ColorPreset::Custom;
-        }
+        });
         app.store.touch();
     }
 
@@ -689,10 +694,10 @@ fn color_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
     col.gap(8.0);
     if let Some(pts) = curve_editor(ctx, col, &grade.curve) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
-            c.color_grade.curve = pts;
+        app.store.edit_selected(id, |c| {
+            c.color_grade.curve = pts.clone();
             c.color_grade.preset = ColorPreset::Custom;
-        }
+        });
         app.store.touch();
     }
     if widgets::button(
@@ -704,9 +709,9 @@ fn color_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
     ) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.color_grade.curve = vec![(0.0, 0.0), (1.0, 1.0)];
-        }
+        });
         app.store.touch();
     }
     col.gap(16.0);
@@ -729,9 +734,9 @@ fn color_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
     if has_lut && widgets::button(ctx, id_of("side-lutclear", 0), lut_row[1], "Clear", ButtonStyle::Normal) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.color_grade.lut_path.clear();
-        }
+        });
         app.store.touch();
     }
     col.gap(10.0);
@@ -751,9 +756,9 @@ fn color_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
         );
         if let Some(v) = sv.or(nv.map(|v| (v / 100.0).clamp(0.0, 1.0))) {
             app.store.snapshot();
-            if let Some(c) = app.store.clip_mut(id) {
+            app.store.edit_selected(id, |c| {
                 c.color_grade.lut_strength = v;
-            }
+            });
             app.store.touch();
         }
         col.gap(6.0);
@@ -774,9 +779,9 @@ fn color_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
             if widgets::button(ctx, id_of("side-preset", idx as u64), *slot, label, style) {
                 app.store.snapshot_forced();
                 app.store.snapshot();
-                if let Some(c) = app.store.clip_mut(id) {
+                app.store.edit_selected(id, |c| {
                     c.color_grade.apply_preset(*preset);
-                }
+                });
                 app.store.touch();
             }
         }
@@ -793,10 +798,10 @@ fn color_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
     ) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             let (lut_path, lut_strength) = (c.color_grade.lut_path.clone(), c.color_grade.lut_strength);
             c.color_grade = ColorGrade { lut_path, lut_strength, ..ColorGrade::default() };
-        }
+        });
         app.store.touch();
     }
 }
@@ -887,10 +892,10 @@ fn transitions_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
         widgets::field_label(ctx, col.row(18.0), "Duration (sec)");
         if let Some(v) = widgets::number_field(ctx, id_of("trs-dur", 0), col.row(FIELD_H), current.duration, 1) {
             app.store.snapshot();
-            if let Some(c) = app.store.clip_mut(id) {
+            app.store.edit_selected(id, |c| {
                 let t = if is_in { &mut c.transition_in } else { &mut c.transition_out };
                 t.duration = v.clamp(0.1, 10.0);
-            }
+            });
             app.store.touch();
         }
         col.gap(10.0);
@@ -933,7 +938,7 @@ fn transitions_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
                 let mirror = is_in && *kind != TransitionType::None && clip.transition_out.kind == TransitionType::None;
                 let dur = current.duration;
                 app.store.snapshot();
-                if let Some(c) = app.store.clip_mut(id) {
+                app.store.edit_selected(id, |c| {
                     if is_in {
                         c.transition_in.kind = *kind;
                         // Choosing an in-transition pre-fills the mirrored out.
@@ -943,7 +948,7 @@ fn transitions_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
                     } else {
                         c.transition_out.kind = *kind;
                     }
-                }
+                });
                 app.store.touch();
             }
         }
@@ -971,9 +976,9 @@ fn audio_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
     );
     if let Some(v) = sv.or(nv.map(|v| v / 100.0)) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.volume = v.clamp(0.0, 1.0);
-        }
+        });
         app.store.touch();
     }
 
@@ -986,13 +991,13 @@ fn audio_tab(app: &mut App, ctx: &mut Ctx, col: &mut Col, clip: &Clip) {
         widgets::field_label(ctx, head, label);
         if let Some(v) = widgets::number_field(ctx, id_of("side-fade", i as u64), field, value, 1) {
             app.store.snapshot();
-            if let Some(c) = app.store.clip_mut(id) {
+            app.store.edit_selected(id, |c| {
                 if i == 0 {
                     c.fade_in = v.max(0.0);
                 } else {
                     c.fade_out = v.max(0.0);
                 }
-            }
+            });
             app.store.touch();
         }
     }
@@ -1187,9 +1192,9 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
     widgets::field_label(ctx, col.row(18.0), "Content");
     if let Some(v) = widgets::text_field(ctx, id_of("txt-content", 0), col.row(FIELD_H), &clip.text, "Text") {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
-            c.text = v;
-        }
+        app.store.edit_selected(id, |c| {
+            c.text = v.clone();
+        });
         app.store.touch();
     }
     col.gap(12.0);
@@ -1199,10 +1204,10 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
     let selected = FONT_FAMILIES.iter().position(|f| *f == clip.font_family).unwrap_or(0);
     if let Some(i) = widgets::dropdown(ctx, id_of("txt-font", 0), col.row(FIELD_H), &fonts, selected) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.font_family = FONT_FAMILIES[i].to_string();
             c.text_preset = TextPreset::Custom;
-        }
+        });
         app.store.touch();
     }
     col.gap(10.0);
@@ -1212,30 +1217,30 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
     widgets::field_label(ctx, size_head, "Size");
     if let Some(v) = widgets::number_field(ctx, id_of("txt-size", 0), size_field, clip.font_size, 0) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.font_size = v.clamp(8.0, 400.0);
             c.text_preset = TextPreset::Custom;
-        }
+        });
         app.store.touch();
     }
     let (spacing_head, spacing_field) = size_spacing[1].split_top(18.0);
     widgets::field_label(ctx, spacing_head, "Letter spacing");
     if let Some(v) = widgets::number_field(ctx, id_of("txt-spacing", 0), spacing_field, clip.letter_spacing, 0) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.letter_spacing = v.clamp(-20.0, 100.0);
             c.text_preset = TextPreset::Custom;
-        }
+        });
         app.store.touch();
     }
     col.gap(10.0);
 
     if let Some(v) = color_field(ctx, &mut col, "txt-color", "Colour", &clip.color) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
-            c.color = v;
+        app.store.edit_selected(id, |c| {
+            c.color = v.clone();
             c.text_preset = TextPreset::Custom;
-        }
+        });
         app.store.touch();
     }
 
@@ -1243,28 +1248,28 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
     if widgets::tab(ctx, id_of("txt-bold", 0), toggles[0], "B", clip.bold) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.bold = !c.bold;
             c.text_preset = TextPreset::Custom;
-        }
+        });
         app.store.touch();
     }
     if widgets::tab(ctx, id_of("txt-italic", 0), toggles[1], "I", clip.italic) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.italic = !c.italic;
             c.text_preset = TextPreset::Custom;
-        }
+        });
         app.store.touch();
     }
     if widgets::tab(ctx, id_of("txt-upper", 0), toggles[2], "AA", clip.uppercase) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.uppercase = !c.uppercase;
             c.text_preset = TextPreset::Custom;
-        }
+        });
         app.store.touch();
     }
     let aligns = ["Left", "Center", "Right"];
@@ -1276,9 +1281,9 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
     };
     if let Some(i) = widgets::dropdown(ctx, id_of("txt-align", 0), toggles[3], &items, sel) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.align = [TextAlign::Left, TextAlign::Center, TextAlign::Right][i];
-        }
+        });
         app.store.touch();
     }
     col.gap(12.0);
@@ -1286,18 +1291,18 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
     if let Some(v) = widgets::checkbox(ctx, id_of("txt-bg", 0), col.row(22.0), "Background", clip.bg_enabled) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.bg_enabled = v;
-        }
+        });
         app.store.touch();
     }
     col.gap(6.0);
     if clip.bg_enabled {
         if let Some(v) = color_field(ctx, &mut col, "txt-bgcolor", "Background colour", &clip.bg_color) {
             app.store.snapshot();
-            if let Some(c) = app.store.clip_mut(id) {
-                c.bg_color = v;
-            }
+            app.store.edit_selected(id, |c| {
+                c.bg_color = v.clone();
+            });
             app.store.touch();
         }
     }
@@ -1308,29 +1313,29 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
     if let Some(v) = widgets::checkbox(ctx, id_of("txt-outline", 0), col.row(22.0), "Outline", clip.outline_enabled) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.outline_enabled = v;
             c.text_preset = TextPreset::Custom;
-        }
+        });
         app.store.touch();
     }
     col.gap(6.0);
     if clip.outline_enabled {
         if let Some(v) = color_field(ctx, &mut col, "txt-outlinecolor", "Outline colour", &clip.outline_color) {
             app.store.snapshot();
-            if let Some(c) = app.store.clip_mut(id) {
-                c.outline_color = v;
+            app.store.edit_selected(id, |c| {
+                c.outline_color = v.clone();
                 c.text_preset = TextPreset::Custom;
-            }
+            });
             app.store.touch();
         }
         widgets::field_label(ctx, col.row(18.0), "Outline width");
         if let Some(v) = widgets::number_field(ctx, id_of("txt-outlinewidth", 0), col.row(FIELD_H), clip.outline_width, 1) {
             app.store.snapshot();
-            if let Some(c) = app.store.clip_mut(id) {
+            app.store.edit_selected(id, |c| {
                 c.outline_width = v.clamp(0.0, 20.0);
                 c.text_preset = TextPreset::Custom;
-            }
+            });
             app.store.touch();
         }
         col.gap(10.0);
@@ -1339,20 +1344,20 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
     if let Some(v) = widgets::checkbox(ctx, id_of("txt-glow", 0), col.row(22.0), "Glow", clip.glow_enabled) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.glow_enabled = v;
             c.text_preset = TextPreset::Custom;
-        }
+        });
         app.store.touch();
     }
     col.gap(6.0);
     if clip.glow_enabled {
         if let Some(v) = color_field(ctx, &mut col, "txt-glowcolor", "Glow colour", &clip.glow_color) {
             app.store.snapshot();
-            if let Some(c) = app.store.clip_mut(id) {
-                c.glow_color = v;
+            app.store.edit_selected(id, |c| {
+                c.glow_color = v.clone();
                 c.text_preset = TextPreset::Custom;
-            }
+            });
             app.store.touch();
         }
     }
@@ -1360,20 +1365,20 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
     if let Some(v) = widgets::checkbox(ctx, id_of("txt-shadow", 0), col.row(22.0), "Shadow", clip.shadow_enabled) {
         app.store.snapshot_forced();
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.shadow_enabled = v;
             c.text_preset = TextPreset::Custom;
-        }
+        });
         app.store.touch();
     }
     col.gap(6.0);
     if clip.shadow_enabled {
         if let Some(v) = color_field(ctx, &mut col, "txt-shadowcolor", "Shadow colour", &clip.shadow_color) {
             app.store.snapshot();
-            if let Some(c) = app.store.clip_mut(id) {
-                c.shadow_color = v;
+            app.store.edit_selected(id, |c| {
+                c.shadow_color = v.clone();
                 c.text_preset = TextPreset::Custom;
-            }
+            });
             app.store.touch();
         }
     }
@@ -1382,9 +1387,9 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
     widgets::field_label(ctx, col.row(18.0), "Opacity");
     if let Some(v) = widgets::slider(ctx, id_of("txt-op", 0), col.row(FIELD_H), clip.opacity, 0.0, 1.0) {
         app.store.snapshot();
-        if let Some(c) = app.store.clip_mut(id) {
+        app.store.edit_selected(id, |c| {
             c.opacity = v;
-        }
+        });
         app.store.touch();
     }
     col.gap(12.0);
@@ -1400,13 +1405,13 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
         widgets::field_label(ctx, head, label);
         if let Some(v) = widgets::number_field(ctx, id_of("txt-xy", i as u64), field, value, 0) {
             app.store.snapshot();
-            if let Some(c) = app.store.clip_mut(id) {
+            app.store.edit_selected(id, |c| {
                 if is_x {
                     c.x = v / pw;
                 } else {
                     c.y = v / ph;
                 }
-            }
+            });
             app.store.touch();
         }
     }
@@ -1421,13 +1426,13 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
         widgets::field_label(ctx, head, label);
         if let Some(v) = widgets::number_field(ctx, id_of("txt-time", i as u64), field, value, 2) {
             app.store.snapshot();
-            if let Some(c) = app.store.clip_mut(id) {
+            app.store.edit_selected(id, |c| {
                 if i == 0 {
                     c.start = v.max(0.0);
                 } else {
                     c.duration = v.max(0.1);
                 }
-            }
+            });
             app.store.touch();
         }
     }

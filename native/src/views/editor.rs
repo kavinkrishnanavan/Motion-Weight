@@ -3,7 +3,7 @@
 
 use crate::app::{App, LibraryTab, Panel};
 use crate::media::timecode;
-use crate::model::ClipKind;
+use crate::model::{ClipKind, Id};
 use crate::ui::widgets::{self, ButtonStyle, Icon};
 use crate::ui::*;
 
@@ -518,22 +518,35 @@ fn shortcuts(app: &mut App, ctx: &mut Ctx) {
                 }
             }
             Key::Char('y') if mods.ctrl => app.store.redo(),
+            // Selects every clip in the project — the keyboard equivalent of
+            // dragging a marquee over the whole timeline.
+            Key::Char('a') if mods.ctrl => {
+                let ids: Vec<Id> = app
+                    .store
+                    .project
+                    .tracks
+                    .iter()
+                    .flat_map(|t| t.clips.iter())
+                    .map(|c| c.id)
+                    .collect();
+                app.store.select_many(&ids);
+            }
             Key::Char('s') if !mods.ctrl => {
-                if let Some(sel) = app.store.selection {
-                    let at = app.store.playhead;
-                    app.store.split_clip(sel.clip_id, at);
+                let at = app.store.playhead;
+                for id in app.store.selected_ids() {
+                    app.store.split_clip(id, at);
                 }
             }
             Key::Char('q') if !mods.ctrl => {
-                if let Some(sel) = app.store.selection {
-                    let at = app.store.playhead;
-                    app.store.trim_to(sel.clip_id, at, true);
+                let at = app.store.playhead;
+                for id in app.store.selected_ids() {
+                    app.store.trim_to(id, at, true);
                 }
             }
             Key::Char('w') if !mods.ctrl => {
-                if let Some(sel) = app.store.selection {
-                    let at = app.store.playhead;
-                    app.store.trim_to(sel.clip_id, at, false);
+                let at = app.store.playhead;
+                for id in app.store.selected_ids() {
+                    app.store.trim_to(id, at, false);
                 }
             }
             _ => {}

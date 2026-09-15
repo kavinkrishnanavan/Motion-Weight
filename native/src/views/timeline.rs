@@ -39,11 +39,27 @@ pub struct ClipDrag {
     base: Clip,
     /// Set when the drop would open a new lane at this index.
     pending_lane: Option<usize>,
+    /// Every other selected clip along for a group move: its id, the track it
+    /// started on (it never hops lanes — only the clip under the pointer
+    /// can), and its own original start time, so each one can be carried by
+    /// the same delta the primary clip ends up moving by. Empty for a trim,
+    /// and for a move that isn't part of a multi-clip selection.
+    companions: Vec<(Id, Id, f32)>,
+}
+
+/// A rubber-band drag over empty timeline space, in screen coordinates.
+struct Marquee {
+    origin: (f32, f32),
+    /// Whether the drag started as an addition to the existing selection
+    /// (shift/ctrl held at mouse-down), so releasing merges rather than
+    /// replaces.
+    additive: bool,
 }
 
 #[derive(Default)]
 pub struct TimelineState {
     drag: Option<ClipDrag>,
+    marquee: Option<Marquee>,
     seeking: bool,
     pub scroll_x: f32,
     pub scroll_y: f32,
@@ -139,8 +155,11 @@ fn draw_toolbar(app: &mut App, ctx: &mut Ctx, r: Rect) {
     ) && has_selection
     {
         let at = app.store.playhead;
-        if let Some(sel) = app.store.selection {
-            app.store.split_clip(sel.clip_id, at);
+        // Split is per-clip and only ever does anything to a clip the
+        // playhead actually sits inside, so broadcasting it across the whole
+        // selection is a no-op for every clip the playhead doesn't touch.
+        for id in app.store.selected_ids() {
+            app.store.split_clip(id, at);
         }
     }
     x += 32.0;
@@ -154,8 +173,8 @@ fn draw_toolbar(app: &mut App, ctx: &mut Ctx, r: Rect) {
     ) && has_selection
     {
         let at = app.store.playhead;
-        if let Some(sel) = app.store.selection {
-            app.store.trim_to(sel.clip_id, at, true);
+        for id in app.store.selected_ids() {
+            app.store.trim_to(id, at, true);
         }
     }
     x += 32.0;
@@ -169,8 +188,8 @@ fn draw_toolbar(app: &mut App, ctx: &mut Ctx, r: Rect) {
     ) && has_selection
     {
         let at = app.store.playhead;
-        if let Some(sel) = app.store.selection {
-            app.store.trim_to(sel.clip_id, at, false);
+        for id in app.store.selected_ids() {
+            app.store.trim_to(id, at, false);
         }
     }
     // Delete sits last, separated from the three cutting tools it is easy to
@@ -428,6 +447,7 @@ fn draw_lanes(app: &mut App, ctx: &mut Ctx, full: Rect, area: Rect) {
 
     update_drag(app, ctx, area, &lanes);
     handle_library_drop(app, ctx, area, &lanes);
+    handle_marquee(app, ctx, area, &lanes);
 
     if let Some(t) = app.timeline.snap_guide {
         let x = x_of(app, area, t).round();
@@ -435,6 +455,69 @@ fn draw_lanes(app: &mut App, ctx: &mut Ctx, full: Rect, area: Rect) {
     }
 
     ctx.painter.set_clip(prev);
+}
+
+/// A rubber-band drag over empty timeline space, for picking out several
+/// clips at once without holding a modifier key for each.
+fn handle_marquee(app: &mut App, ctx: &mut Ctx, area: Rect, lanes: &[Rect]) {
+    if let Some(m) = &app.timeline.marquee {
+        let (ox, oy) = m.origin;
+        let additive = m.additive;
+        let r = Rect::new(ox.min(ctx.mouse.0), oy.min(ctx.mouse.1), (ctx.mouse.0 - ox).abs(), (ctx.mouse.1 - oy).abs());
+
+        if ctx.mouse_down {
+            ctx.painter.rect(r, with_alpha(ACCENT, 0.14));
+            ctx.painter.stroke_round_rect(r, 0.0, ACCENT, 1.0);
+            return;
+        }
+
+        app.timeline.marquee = None;
+        let hit = clips_in_rect(app, area, lanes, r);
+        if additive {
+            for id in hit {
+                if !app.store.is_selected(id) {
+                    if let Some((track_id, _)) = app.store.locate(id) {
+                        app.store.toggle_selected(Selection { track_id, clip_id: id });
+                    }
+                }
+            }
+        } else {
+            app.store.select_many(&hit);
+        }
+        return;
+    }
+
+    // Only a press that nothing else — a clip, a grip, a dropped payload —
+    // already claimed gets to start a marquee, so this never steals a click
+    // that was actually meant for something drawn on top of the lanes.
+    if app.timeline.drag.is_none() && ctx.hovered(area) && ctx.mouse_pressed && !ctx.press_consumed {
+        let additive = ctx.mods.shift || ctx.mods.ctrl;
+        app.timeline.marquee = Some(Marquee { origin: ctx.mouse, additive });
+        ctx.press_consumed = true;
+        if !additive {
+            // Deselecting immediately, rather than waiting for release, is
+            // what makes a plain click on empty space clear the selection —
+            // a marquee that never grows past a pixel is just a click.
+            app.store.select(None);
+        }
+    }
+}
+
+/// Every clip whose on-screen box overlaps `r`, a screen-space rect.
+fn clips_in_rect(app: &App, area: Rect, lanes: &[Rect], r: Rect) -> Vec<Id> {
+    let mut out = Vec::new();
+    for (i, lane) in lanes.iter().enumerate() {
+        let Some(track) = app.store.project.tracks.get(i) else { continue };
+        for clip in &track.clips {
+            let x0 = x_of(app, area, clip.start);
+            let w = clip.duration * app.store.px_per_sec;
+            let cr = Rect::new(x0, lane.y + 3.0, w.max(3.0), lane.h - 6.0);
+            if !cr.intersect(&r).is_empty() {
+                out.push(clip.id);
+            }
+        }
+    }
+    out
 }
 
 fn draw_clip(app: &mut App, ctx: &mut Ctx, area: Rect, lane: Rect, track_id: Id, clip: &Clip) {
@@ -445,7 +528,7 @@ fn draw_clip(app: &mut App, ctx: &mut Ctx, area: Rect, lane: Rect, track_id: Id,
         return;
     }
 
-    let selected = app.store.selection.map(|s| s.clip_id) == Some(clip.id);
+    let selected = app.store.is_selected(clip.id);
     let id = id_of("tl-clip", clip.id);
     // `interact` marks the press as consumed once it takes this clip, so the
     // "was anything else already handling it" test has to be read first.
@@ -505,9 +588,6 @@ fn draw_clip(app: &mut App, ctx: &mut Ctx, area: Rect, lane: Rect, track_id: Id,
     }
 
     if hovered && ctx.mouse_pressed && free && app.timeline.drag.is_none() {
-        app.store.select(Some(Selection { track_id, clip_id: clip.id }));
-        app.store.begin_history_group();
-        app.store.suspend_track_cleanup = true;
         let mode = if trimmable && ctx.hovered(start_grip) {
             DragMode::TrimStart
         } else if trimmable && ctx.hovered(end_grip) {
@@ -515,13 +595,48 @@ fn draw_clip(app: &mut App, ctx: &mut Ctx, area: Rect, lane: Rect, track_id: Id,
         } else {
             DragMode::Move
         };
-        app.timeline.drag = Some(ClipDrag {
-            clip_id: clip.id,
-            mode,
-            grab_dt: time_at(app, area, ctx.mouse.0) - clip.start,
-            base: clip.clone(),
-            pending_lane: None,
-        });
+
+        if ctx.mods.shift || ctx.mods.ctrl {
+            // A modified click only toggles membership — it never starts a
+            // drag, so extending a selection can't accidentally drag it too.
+            app.store.toggle_selected(Selection { track_id, clip_id: clip.id });
+        } else {
+            // Clicking a clip that's already one of several selected keeps
+            // the whole group selected, so the drag below can carry all of
+            // them; clicking anything else collapses to just this one, same
+            // as before multi-select existed. A trim always collapses first
+            // — resizing a whole group by one clip's edge isn't meaningful.
+            let keep_group = mode == DragMode::Move && selected && app.store.selected_ids().len() > 1;
+            if !keep_group {
+                app.store.select(Some(Selection { track_id, clip_id: clip.id }));
+            }
+            app.store.begin_history_group();
+            app.store.suspend_track_cleanup = true;
+
+            let companions: Vec<(Id, Id, f32)> = if mode == DragMode::Move {
+                app.store
+                    .selected_ids()
+                    .into_iter()
+                    .filter(|id| *id != clip.id)
+                    .filter_map(|id| {
+                        let (track_id, _) = app.store.locate(id)?;
+                        let start = app.store.clip(id)?.start;
+                        Some((id, track_id, start))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            app.timeline.drag = Some(ClipDrag {
+                clip_id: clip.id,
+                mode,
+                grab_dt: time_at(app, area, ctx.mouse.0) - clip.start,
+                base: clip.clone(),
+                pending_lane: None,
+                companions,
+            });
+        }
     }
 }
 
@@ -563,6 +678,7 @@ fn update_drag(app: &mut App, ctx: &mut Ctx, area: Rect, lanes: &[Rect]) {
     let Some(drag) = &app.timeline.drag else { return };
     let (clip_id, mode, grab_dt) = (drag.clip_id, drag.mode, drag.grab_dt);
     let base = drag.base.clone();
+    let companions = drag.companions.clone();
 
     if !ctx.mouse_down {
         // Landing in a gutter opens the new lane the marker promised.
@@ -598,6 +714,18 @@ fn update_drag(app: &mut App, ctx: &mut Ctx, area: Rect, lanes: &[Rect]) {
             }
             if let Some(drag) = &mut app.timeline.drag {
                 drag.pending_lane = pending;
+            }
+
+            // Carry every other selected clip along by the delta the pointer
+            // actually produced (post-snap, post-collision) rather than the
+            // raw cursor motion — each stays on its own original track, since
+            // only the clip under the pointer resolves a lane change.
+            if !companions.is_empty() {
+                let applied = app.store.clip(clip_id).map(|c| c.start).unwrap_or(start);
+                let delta = applied - base.start;
+                for (id, track_id, orig_start) in companions {
+                    app.store.move_clip(id, track_id, orig_start + delta);
+                }
             }
             app.store.touch();
         }
