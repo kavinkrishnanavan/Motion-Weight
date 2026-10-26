@@ -585,6 +585,8 @@ impl Store {
         right.duration = track.clips[idx].duration - offset;
         if right.kind != ClipKind::Text {
             right.trim_in += offset;
+        } else if right.timer {
+            right.timer_offset += offset;
         }
         track.clips[idx].duration = offset;
         let right_id = right.id;
@@ -608,6 +610,8 @@ impl Store {
         if keep_right {
             if clip.kind != ClipKind::Text {
                 clip.trim_in += offset;
+            } else if clip.timer {
+                clip.timer_offset += offset;
             }
             clip.start = at;
             clip.duration -= offset;

@@ -137,7 +137,8 @@ fn draw_grid(app: &mut App, ctx: &mut Ctx, grid: Rect, ids: &[Id]) {
 fn draw_text_tab(app: &mut App, ctx: &mut Ctx, r: Rect) {
     let presets = crate::model::TEXT_PRESETS;
     let per_row = ((r.w + GAP) / (TILE_W + GAP)).floor().max(1.0) as usize;
-    let rows = (presets.len() as f32 / per_row as f32).ceil();
+    // One extra tile after the presets: the timer.
+    let rows = ((presets.len() + 1) as f32 / per_row as f32).ceil();
     let content_h = rows * (TILE_H + GAP);
     widgets::scroll(ctx, id_of("lib-text-scroll", 0), r, content_h, &mut app.text_scroll);
     let prev = ctx.painter.push_clip(r);
@@ -175,6 +176,35 @@ fn draw_text_tab(app: &mut App, ctx: &mut Ctx, r: Rect) {
         }
         if hovered && ctx.double_click {
             app.add_text_clip(None, None, *preset);
+        }
+    }
+
+    let i = presets.len();
+    let tile = Rect::new(
+        r.x + (i % per_row) as f32 * (TILE_W + GAP),
+        r.y + (i / per_row) as f32 * (TILE_H + GAP) - app.text_scroll,
+        TILE_W,
+        TILE_H,
+    );
+    if tile.bottom() >= r.y && tile.y <= r.bottom() {
+        let id = id_of("lib-text-item", i as u64);
+        let (hovered, _) = ctx.interact(id, tile);
+        if hovered {
+            ctx.cursor = Cursor::Hand;
+            ctx.tooltip = Some((tile, "Drag to the timeline · double-click to add".into()));
+        }
+        let (preview, name_rect) = tile.split_top(TILE_H - 20.0);
+        ctx.painter.round_rect(preview, R_SM, BG_ELEV);
+        ctx.painter
+            .stroke_round_rect(preview, R_SM, if hovered { ACCENT } else { BORDER }, 1.0);
+        ctx.painter.label(preview, "0:05", 20.0, Weight::Bold, TEXT, Align::Center);
+        ctx.painter
+            .label(name_rect, "Timer", FS_SMALL, Weight::Regular, TEXT_2, Align::Left);
+        if ctx.is_active(id) && dragging_far(ctx) {
+            ctx.drag_payload = Some(DragPayload::Timer);
+        }
+        if hovered && ctx.double_click {
+            app.ask_timer(None, None);
         }
     }
     ctx.painter.set_clip(prev);
@@ -380,6 +410,7 @@ fn draw_drag_ghost(app: &App, ctx: &mut Ctx) {
             .find(|(p, _)| p == preset)
             .map(|(_, name)| name.to_string())
             .unwrap_or_else(|| "Text".into()),
+        DragPayload::Timer => "Timer".into(),
         DragPayload::StockPhoto(_) => "Photo".into(),
         DragPayload::StockVideo(_) => "Video".into(),
     };

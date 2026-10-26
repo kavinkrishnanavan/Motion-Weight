@@ -104,6 +104,8 @@ pub struct ExportClip {
     pub kind: ClipKind,
     pub path: Option<String>,
     pub text: String,
+    /// `(end, down, offset)` when the text is a clock rather than fixed words.
+    pub timer: Option<(u32, bool, f32)>,
     pub start: f32,
     pub duration: f32,
     pub trim_in: f32,
@@ -137,6 +139,18 @@ pub struct ExportClip {
     pub trans_out: Transition,
     pub fade_in: f32,
     pub fade_out: f32,
+}
+
+/// drawtext expansion that counts the way `Clip::timer_value` does, evaluated
+/// per frame so one filter covers the whole clip.
+fn timer_expansion((end, down, offset): (u32, bool, f32), start: f32) -> String {
+    let n = format!("floor(min(max(t-{start:.3}+{offset:.3},0),{end}))");
+    let v = if down { format!("({end}-{n})") } else { n };
+    if end >= 60 {
+        format!("%{{eif\\:floor({v}/60)\\:d}}\\:%{{eif\\:mod({v},60)\\:d\\:2}}")
+    } else {
+        format!("%{{eif\\:{v}\\:d}}")
+    }
 }
 
 fn esc_drawtext(s: &str) -> String {
@@ -827,7 +841,10 @@ fn build_graph(
                         "[{}]drawtext=fontfile='{}':text='{}':fontsize={}:fontcolor={}:x={}-text_w/2:y={}-text_h/2:enable='between(t,{:.3},{:.3})'{}{}{}[{}];",
                         running,
                         ff,
-                        esc_drawtext(&clip.text),
+                        match clip.timer {
+                            Some(spec) => timer_expansion(spec, clip.start),
+                            None => esc_drawtext(&clip.text),
+                        },
                         clip.font_size as i64,
                         color,
                         x_px,

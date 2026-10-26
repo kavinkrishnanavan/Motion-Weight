@@ -53,6 +53,7 @@ fn to_export(store: &Store, clip: &Clip, pw: u32, ph: u32) -> ExportClip {
         } else {
             clip.text.clone()
         },
+        timer: clip.timer.then_some((clip.timer_end, clip.timer_down, clip.timer_offset)),
         start: clip.start,
         duration: clip.duration,
         trim_in: if clip.kind == ClipKind::Text { 0.0 } else { clip.trim_in },

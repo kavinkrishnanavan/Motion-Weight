@@ -125,6 +125,7 @@ pub struct Ctx {
 pub enum DragPayload {
     Asset(crate::model::Id),
     Text(crate::model::TextPreset),
+    Timer,
     StockPhoto(usize),
     StockVideo(usize),
 }

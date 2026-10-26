@@ -1189,13 +1189,32 @@ fn text_props(app: &mut App, ctx: &mut Ctx, area: Rect, clip: &Clip, tabs: &[Sid
         return col.used();
     }
 
-    widgets::field_label(ctx, col.row(18.0), "Content");
-    if let Some(v) = widgets::text_field(ctx, id_of("txt-content", 0), col.row(FIELD_H), &clip.text, "Text") {
-        app.store.snapshot();
-        app.store.edit_selected(id, |c| {
-            c.text = v.clone();
-        });
-        app.store.touch();
+    if clip.timer {
+        widgets::field_label(ctx, col.row(18.0), "Count until (seconds)");
+        if let Some(v) = widgets::number_field(ctx, id_of("timer-end", 0), col.row(FIELD_H), clip.timer_end as f32, 0) {
+            app.store.snapshot();
+            app.store.edit_selected(id, |c| {
+                c.timer_end = (v.round().max(1.0)) as u32;
+            });
+            app.store.touch();
+        }
+        col.gap(8.0);
+        if let Some(v) = widgets::checkbox(ctx, id_of("timer-down", 0), col.row(FIELD_H), "Count down", clip.timer_down) {
+            app.store.snapshot();
+            app.store.edit_selected(id, |c| {
+                c.timer_down = v;
+            });
+            app.store.touch();
+        }
+    } else {
+        widgets::field_label(ctx, col.row(18.0), "Content");
+        if let Some(v) = widgets::text_field(ctx, id_of("txt-content", 0), col.row(FIELD_H), &clip.text, "Text") {
+            app.store.snapshot();
+            app.store.edit_selected(id, |c| {
+                c.text = v.clone();
+            });
+            app.store.touch();
+        }
     }
     col.gap(12.0);
 

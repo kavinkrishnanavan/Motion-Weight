@@ -566,6 +566,25 @@ pub struct Clip {
     pub shadow_color: String,
     #[serde(default)]
     pub text_preset: TextPreset,
+
+    // Timer — a text clip whose text is a clock driven by the clip's own time.
+    #[serde(default)]
+    pub timer: bool,
+    /// Whole seconds the clock runs to (or from, when counting down).
+    #[serde(default = "default_timer_end")]
+    pub timer_end: u32,
+    #[serde(default)]
+    pub timer_down: bool,
+    /// Seconds already elapsed when the clip begins; a split or head-trim
+    /// carries the clock forward through this instead of restarting it.
+    #[serde(default)]
+    pub timer_offset: f32,
+}
+
+pub const TIMER_DEFAULT_SECS: u32 = 5;
+
+fn default_timer_end() -> u32 {
+    TIMER_DEFAULT_SECS
 }
 
 fn one() -> f32 {
@@ -646,6 +665,46 @@ impl Clip {
             shadow_enabled: false,
             shadow_color: "#000000".into(),
             text_preset: TextPreset::Custom,
+            timer: false,
+            timer_end: TIMER_DEFAULT_SECS,
+            timer_down: false,
+            timer_offset: 0.0,
+        }
+    }
+
+    pub fn new_timer(start: f32, end: u32) -> Clip {
+        let end = end.max(1);
+        let mut c = Clip::new_media(ClipKind::Text, 0, start, TIMER_DEFAULT_SECS as f32, 0.0, 0.0);
+        c.timer = true;
+        c.timer_end = end;
+        c.text = "Timer".into();
+        c.bold = true;
+        c.font_size = 120.0;
+        c
+    }
+
+    /// Whole seconds the timer shows `local` seconds into the clip.
+    pub fn timer_value(&self, local: f32) -> u32 {
+        let elapsed = (local + self.timer_offset).max(0.0).floor() as u32;
+        let n = elapsed.min(self.timer_end);
+        if self.timer_down {
+            self.timer_end - n
+        } else {
+            n
+        }
+    }
+
+    /// What the clip draws `local` seconds in: the clock for a timer, else its text.
+    pub fn shown_text(&self, local: f32) -> String {
+        let s = if self.timer {
+            format_timer(self.timer_value(local), self.timer_end)
+        } else {
+            self.text.clone()
+        };
+        if self.uppercase {
+            s.to_uppercase()
+        } else {
+            s
         }
     }
 
@@ -675,6 +734,15 @@ impl Clip {
             }
         }
         gain.clamp(0.0, 1.0)
+    }
+}
+
+/// `m:ss` once the timer can pass a minute, plain seconds otherwise.
+pub fn format_timer(v: u32, end: u32) -> String {
+    if end >= 60 {
+        format!("{}:{:02}", v / 60, v % 60)
+    } else {
+        v.to_string()
     }
 }
 
@@ -1154,4 +1222,27 @@ pub fn parse_hex(hex: &str) -> [u8; 3] {
     }
     let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).unwrap_or(255);
     [byte(0), byte(2), byte(4)]
+}
+
+#[cfg(test)]
+mod timer_tests {
+    use super::*;
+
+    #[test]
+    fn counts_up_holds_and_counts_down() {
+        let mut c = Clip::new_timer(0.0, 5);
+        assert_eq!(c.duration, 5.0);
+        assert_eq!([0.0, 0.99, 1.0, 4.5, 9.0].map(|t| c.timer_value(t)), [0, 0, 1, 4, 5]);
+        c.timer_down = true;
+        assert_eq!([0.0, 1.0, 4.5, 9.0].map(|t| c.timer_value(t)), [5, 4, 1, 0]);
+    }
+
+    #[test]
+    fn split_carries_the_clock_forward() {
+        let mut c = Clip::new_timer(0.0, 10);
+        c.timer_offset = 3.0;
+        assert_eq!(c.timer_value(0.0), 3);
+        assert_eq!(format_timer(75, 90), "1:15");
+        assert_eq!(format_timer(7, 10), "7");
+    }
 }

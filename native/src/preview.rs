@@ -424,7 +424,7 @@ impl Preview {
             let weight = weight_of(clip);
             let family = clip.font_family.as_str();
             let spacing = clip.letter_spacing * scale;
-            let shown = if clip.uppercase { clip.text.to_uppercase() } else { clip.text.clone() };
+            let shown = clip.shown_text(t - clip.start);
             let cx = stage.x + (clip.x + st.offset_x) * stage.w;
             let cy = stage.y + (clip.y + st.offset_y) * stage.h;
             let w = ctx.painter.text_width_styled(&shown, size, weight, family, spacing);
@@ -1178,7 +1178,8 @@ fn mask_rotate_knob(m: &Mask, stage: Rect) -> Rect {
 fn text_box(ctx: &mut Ctx, clip: &Clip, store: &Store, stage: Rect) -> Rect {
     let scale = stage.w / store.project.settings.width as f32;
     let size = (clip.font_size * scale).max(4.0);
-    let w = ctx.painter.text_width(&clip.text, size, weight_of(clip)).max(12.0);
+    let shown = clip.shown_text(store.playhead - clip.start);
+    let w = ctx.painter.text_width(&shown, size, weight_of(clip)).max(12.0);
     let h = ctx.painter.line_height(size, weight_of(clip));
     let cx = stage.x + clip.x * stage.w;
     let cy = stage.y + clip.y * stage.h;

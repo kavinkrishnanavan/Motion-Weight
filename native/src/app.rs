@@ -150,6 +150,8 @@ pub enum Modal {
     None,
     NewProject { name: String },
     DeleteProject { id: String, name: String },
+    /// Asks how far a new timer should run before it is placed.
+    Timer { end: String, track: Option<Id>, start: Option<f32> },
     Exporting { progress: f32 },
 }
 
@@ -723,6 +725,16 @@ impl App {
         self.store.add_clip(track_id, clip);
     }
 
+    pub fn ask_timer(&mut self, track_id: Option<Id>, start: Option<f32>) {
+        self.modal = Modal::Timer { end: TIMER_DEFAULT_SECS.to_string(), track: track_id, start };
+    }
+
+    fn add_timer_clip(&mut self, track_id: Option<Id>, start: Option<f32>, end: u32) {
+        let track_id = self.store.track_for(ClipKind::Text, track_id);
+        let clip = Clip::new_timer(start.unwrap_or(self.store.playhead), end);
+        self.store.add_clip(track_id, clip);
+    }
+
     pub fn add_text_clip(&mut self, track_id: Option<Id>, start: Option<f32>, preset: TextPreset) {
         let track_id = self.store.track_for(ClipKind::Text, track_id);
         let clip = Clip::new_text(start.unwrap_or(self.store.playhead), preset);
@@ -1131,6 +1143,40 @@ impl App {
                     close = true;
                 } else {
                     self.modal = Modal::DeleteProject { id, name };
+                }
+            }
+            Modal::Timer { mut end, track, start } => {
+                let (title, rest) = inner.split_top(26.0);
+                ctx.painter
+                    .label(title, "Add timer", FS_TITLE, Weight::Bold, TEXT, Align::Left);
+                let (_, rest) = rest.split_top(14.0);
+                let (label, rest) = rest.split_top(18.0);
+                widgets::field_label(ctx, label, "Count until (seconds)");
+                let (field, rest) = rest.split_top(FIELD_H);
+                let id = id_of("modal-timer-end", 0);
+                if ctx.focus != id && !ctx.any_popup_open() {
+                    ctx.edit_text = end.clone();
+                    ctx.set_focus(id, end.len());
+                }
+                if let Some(v) = widgets::text_field(ctx, id, field, &end, "5") {
+                    end = v;
+                }
+                let (actions, _) = rest.split_bottom(FIELD_H);
+                let (add, cancel) = action_pair(actions);
+                let parsed = end.trim().parse::<u32>().ok().filter(|v| *v >= 1);
+                let submit = ctx.keys.contains(&Key::Enter)
+                    || widgets::button(ctx, id_of("modal-timer-add", 0), add, "Add", ButtonStyle::Primary);
+                let cancelled = ctx.keys.contains(&Key::Escape)
+                    || widgets::button(ctx, id_of("modal-cancel", 0), cancel, "Cancel", ButtonStyle::Normal);
+                if let (true, Some(secs)) = (submit, parsed) {
+                    ctx.focus = 0;
+                    self.add_timer_clip(track, start, secs);
+                    close = true;
+                } else if cancelled {
+                    ctx.focus = 0;
+                    close = true;
+                } else {
+                    self.modal = Modal::Timer { end, track, start };
                 }
             }
             Modal::Exporting { progress } => {

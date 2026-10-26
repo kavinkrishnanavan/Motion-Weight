@@ -546,6 +546,9 @@ fn draw_clip(app: &mut App, ctx: &mut Ctx, area: Rect, lane: Rect, track_id: Id,
     }
 
     let label = match clip.kind {
+        ClipKind::Text if clip.timer => {
+            format!("Timer \u{b7} {} {}s", if clip.timer_down { "from" } else { "to" }, clip.timer_end)
+        }
         ClipKind::Text => clip.text.clone(),
         _ => app
             .store
@@ -746,6 +749,8 @@ fn update_drag(app: &mut App, ctx: &mut Ctx, area: Rect, lanes: &[Rect]) {
                 clip.duration = base.duration - delta;
                 if clip.kind != ClipKind::Text {
                     clip.trim_in = (base.trim_in + delta).max(0.0);
+                } else if clip.timer {
+                    clip.timer_offset = (base.timer_offset + delta).max(0.0);
                 }
             }
             app.store.touch();
@@ -868,6 +873,7 @@ fn handle_library_drop(app: &mut App, ctx: &mut Ctx, area: Rect, lanes: &[Rect])
     let over = ctx.hovered(Rect::new(area.x - GUTTER_W, area.y, area.w + GUTTER_W, area.h));
     let (kind, duration) = match &payload {
         DragPayload::Text(_) => (ClipKind::Text, 3.0),
+        DragPayload::Timer => (ClipKind::Text, crate::model::TIMER_DEFAULT_SECS as f32),
         DragPayload::StockPhoto(_) => (ClipKind::Image, 3.0),
         DragPayload::StockVideo(i) => (ClipKind::Video, app.stock_videos.get(*i).map(|v| v.duration).unwrap_or(3.0)),
         DragPayload::Asset(id) => match app.store.asset(*id) {
@@ -926,6 +932,7 @@ fn handle_library_drop(app: &mut App, ctx: &mut Ctx, area: Rect, lanes: &[Rect])
 
     match payload {
         DragPayload::Text(preset) => app.add_text_clip(Some(track_id), Some(start), preset),
+        DragPayload::Timer => app.ask_timer(Some(track_id), Some(start)),
         DragPayload::Asset(asset_id) => {
             let Some(asset) = app.store.asset(asset_id).cloned() else { return };
             let s = app.store.project.settings;
